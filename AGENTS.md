@@ -12,11 +12,11 @@ proven about rs-matter and why the design looks as it does). It is a young proje
 
 ## Status
 
-Done: Phase 0 (spike), Phase 1 (workspace, config) and Phase 2 (the plugin host, tested against a fake
-Matter side). Not built yet: the rs-matter frontend (`it-matters-matter`), wiring the host into
-`it-matters run`, the plugin supervisor (spawning and restarting `run` plugins), the TCP + token
-listener for remote plugins, the plugin SDK and the Linux plugins. `it-matters run` still only
-validates the config and exits with code 3.
+Done: Phase 0 (spike), Phase 1 (workspace, config), Phase 2 (plugin host) and Phase 3 (the rs-matter
+frontend, wired into `it-matters run`; verified end to end with the matter.js controller, see
+`docs/testing/e2e.md`). Not built yet: the plugin supervisor (the daemon does not start `run` plugins),
+the TCP + token listener for remote plugins, config reload, the plugin SDK, the Linux plugins,
+packaging (systemd units, installer), and verification with Home Assistant / Apple Home / Google Home.
 
 ## ⚠️ Rule: exhaustive documentation, kept current (configuration AND usage)
 
@@ -99,9 +99,12 @@ Build output must not go to `/tmp` on the author's machine (a small tmpfs); use
 |---|---|
 | `crates/it-matters-model` | Matter-agnostic device/capability model and plugin wire types (`DeviceSpec`, `CapabilityKind`, `Value`), validation. No IO, no Matter. |
 | `crates/it-matters-core` | The host: `mapping.rs` (device -> Matter units, level scaling, mute polarity), `allocator.rs` (persisted endpoint ids), `registry.rs` (pure lifecycle state machine returning `FrontendEvent`s), `frontend.rs` (channel boundary + `FakeFrontend`), `host.rs` (actor + session tasks, Unix socket). Tests in `tests/host.rs` use in-memory pipes and virtual time. |
-| `crates/it-matters` | The daemon binary: CLI (`run`, `check`), `config.rs` (all config types, validation, config + docs tests). |
+| `crates/it-matters-matter` | The Matter frontend on rs-matter (pinned git rev): `state.rs` (pure endpoint table, unit-tested), `commissioning.rs` (random persisted passcode), `shared.rs` (table + dynamic node metadata + controller-write channel), `node.rs` (endpoint definitions), `handlers.rs` (one async cluster handler per cluster type, serving every endpoint; the event pump lives in `BridgedInfoH::run`), `run.rs` (stack, mDNS via avahi, data model chain). |
+| `crates/it-matters` | The daemon binary: CLI (`run`, `check`), `config.rs` (all config types, validation, config + docs tests), `service.rs` (`run`: starts the Matter thread and the tokio host). |
 | `docs/config/` | Configuration documentation (see the rule above). `docs/design/` holds design notes and the rs-matter spike. |
 | `examples/config.yaml` | The full worked example config. |
+| `examples/plugins/demo.py` | A runnable demo plugin (stdlib Python); used in the e2e procedure. |
+| `docs/matter.md`, `docs/testing/e2e.md` | What controllers see (and what is verified), and the manual end-to-end procedure. |
 | `scripts/update-third-party-notices.py` | Generates `THIRD-PARTY-NOTICES.md`. |
 
 Planned crates (see the plan): `it-matters-matter` (the real frontend on rs-matter), `it-matters-plugin-sdk`,
@@ -125,6 +128,19 @@ Planned crates (see the plan): `it-matters-matter` (the real frontend on rs-matt
 - **Host behaviour is specified by tests** (`crates/it-matters-core/tests/host.rs`): when changing the
   host, break the behaviour on purpose (mutation check) to confirm a test fails, as was done for the
   allow-list, one-session-per-plugin, answer ownership, frame limit, idle and set timeouts.
+- **Threads:** rs-matter blocks, so `run_blocking` owns its own thread; the host runs on a current-thread
+  tokio runtime in `main`. Only `async-channel` channels cross between them. Never call tokio from the
+  Matter thread or rs-matter futures from tokio.
+- **Matter handlers are singletons per cluster type**, keyed by the request's endpoint id; add a unit kind
+  by extending `node.rs`, `handlers.rs`, `state.rs`, the chain in `run.rs`, `mapping.rs` and the docs.
+  Cluster attribute and command lists are static per type (`FULL_CLUSTER.with_attrs(...)`): list the
+  optional ones you implement explicitly, since `with!(required)` does not work for commands.
+- **Linking a binary that uses rs-matter** needs embassy-time's `std` driver and a timer queue
+  (`generic-queue-64`); without them the link fails with `__embassy_time_queue_item_from_waker`.
+- **The Matter UDP port (5540) is a constant in rs-matter**, not configurable; there is no `matter.port`.
+- **Testing the real stack** is manual (`docs/testing/e2e.md`); do it after changing `it-matters-matter`
+  or the host/Matter boundary, and update `docs/matter.md`'s verified list. When waiting on a process
+  from a shell, use the `[p]attern` trick with `pgrep -f`, or the command matches itself.
 - **rs-matter facts** (from the spike): endpoints are sorted by id and a given endpoint's cluster shape
   is fixed for its lifetime, so a device whose capabilities change gets a new endpoint id (allocated
   from a persisted table, never reused); the handler chain is static while metadata is dynamic

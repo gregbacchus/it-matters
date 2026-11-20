@@ -1,6 +1,6 @@
 # Plugin protocol (v1)
 
-Plugins are separate processes. They connect to the host's Unix socket (`ipc.socket`) and exchange
+Plugins are separate processes. They connect to the host's Unix socket (`ipc.socket`, mode `0660`) and exchange
 **one JSON object per line** in each direction, UTF-8, `\n`-terminated, at most 65536 bytes per line.
 Every object has a `"type"`. The types are defined in `crates/it-matters-model/src/protocol.rs`.
 
@@ -10,7 +10,7 @@ Every object has a `"type"`. The types are defined in `crates/it-matters-model/s
    `{"type":"hello","plugin":"linux-system","version":"0.1.0","proto":1}`.
    `plugin` must be an id listed under `plugins` in the host's config, otherwise the host sends
    `{"type":"error","message":...}` and closes the connection. `token` is for remote (TCP)
-   connections, which are not implemented yet.
+   connections, which are not implemented yet (the field is accepted and ignored on the Unix socket).
 2. The host answers `{"type":"welcome","proto":1}`.
 3. Only one connection per plugin id is accepted at a time. A second one is refused while the first
    is alive, so a reconnecting plugin should retry with backoff.

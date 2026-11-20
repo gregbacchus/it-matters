@@ -10,18 +10,24 @@ The first use case: expose a Linux desktop to your smart home (is it online, is 
 the microphone active, current volume, mute), with the bridge running as a service on an always-on
 machine and desktop agents connecting to it.
 
-> **Status: early.** The design is proven (see [`docs/design/spike.md`](docs/design/spike.md): rs-matter
-> can add and remove bridged devices at runtime) and the workspace, device model and configuration
-> exist, but the bridge itself is not implemented yet. `it-matters run` validates the configuration and
-> exits.
+> **Status: early but working.** The bridge runs: plugins connect over a Unix socket, their devices appear
+> in Matter as Contact/Occupancy sensors, On/Off plugs and Speakers, controller writes reach the plugin, and
+> devices appear, disappear and go unreachable live. Verified with the matter.js controller on Linux; **not yet
+> verified with Home Assistant, Apple Home or Google Home**. Not built yet: the daemon starting plugins for you,
+> remote (TCP) plugin agents, the Linux desktop plugins and packaging. See [`docs/usage.md`](docs/usage.md).
 
-## Try what exists
+## Try it
+
+Needs a running `avahi-daemon` (see the [usage guide](docs/usage.md) for the full requirements):
 
 ```bash
 cargo build
-cargo run -- check --config examples/config.yaml
+cargo run -- check --config examples/config.yaml    # validate the example configuration
 cargo test --workspace
 ```
+
+To run the bridge and pair a controller, follow [`docs/usage.md`](docs/usage.md) (and
+[`docs/testing/e2e.md`](docs/testing/e2e.md) for a complete walk-through with a demo plugin).
 
 ## Configuration
 

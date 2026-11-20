@@ -1,0 +1,23 @@
+[package]
+name = "it-matters-matter"
+description = "The Matter frontend of it-matters, built on rs-matter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+it-matters-core = { workspace = true }
+# rs-matter's API is unstable and the crate is used from git: pin an exact revision (see docs/design/spike.md).
+rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "4e4105a7e37d86a03ff2c9d0f6fc9b572bcce6c0", features = ["async-io", "zbus"] }
+async-channel = { workspace = true }
+log = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+static_cell = "2"
+futures-lite = "2"
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "sys_rng", "thread_rng"] }
+# rs-matter uses embassy-time; a binary must select a timer driver and queue (as rs-matter's examples do).
+embassy-time = { version = "0.5", features = ["std"] }
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }

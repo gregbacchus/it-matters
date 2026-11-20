@@ -55,12 +55,11 @@ impl Default for BridgeConfig {
     }
 }
 
-/// The Matter side: network port, persistence and commissioning codes.
+/// The Matter side: persistence and commissioning codes. (The UDP port is fixed at 5540 by rs-matter.)
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 #[cfg_attr(test, serde(deny_unknown_fields))]
 pub struct MatterConfig {
-    pub port: u16,
     pub storage_dir: PathBuf,
     /// Setup passcode; `None` means the stack's default / a generated one.
     pub passcode: Option<u32>,
@@ -70,7 +69,7 @@ pub struct MatterConfig {
 
 impl Default for MatterConfig {
     fn default() -> Self {
-        Self { port: 5540, storage_dir: PathBuf::from("/var/lib/it-matters"), passcode: None, discriminator: None }
+        Self { storage_dir: PathBuf::from("/var/lib/it-matters"), passcode: None, discriminator: None }
     }
 }
 
@@ -149,6 +148,8 @@ impl Config {
         let mut errors = Vec::new();
         if self.bridge.name.trim().is_empty() {
             errors.push("bridge.name must not be empty".into());
+        } else if self.bridge.name.chars().count() > 32 {
+            errors.push("bridge.name must be at most 32 characters (a Matter limit)".into());
         }
         if let Some(d) = self.matter.discriminator
             && d > 0x0FFF
@@ -207,13 +208,7 @@ impl Config {
     }
 }
 
-/// Matter setup passcodes are 1..=99999998 and must not be one of the trivially guessable values.
-pub fn valid_passcode(p: u32) -> bool {
-    const FORBIDDEN: [u32; 12] = [
-        0, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888, 99999999, 12345678, 87654321,
-    ];
-    p <= 99_999_998 && !FORBIDDEN.contains(&p)
-}
+pub use it_matters_matter::commissioning::valid_passcode;
 
 /// Where to look for the config file, most specific first. Pure so it can be tested.
 pub fn config_search_paths(xdg_config_home: Option<&str>, home: Option<&str>) -> Vec<PathBuf> {
@@ -245,8 +240,8 @@ mod tests {
 
     #[test]
     fn partial_config_keeps_other_defaults() {
-        let c = cfg("matter: { port: 5541 }\n");
-        assert_eq!(c.matter.port, 5541);
+        let c = cfg("matter: { discriminator: 7 }\n");
+        assert_eq!(c.matter.discriminator, Some(7));
         assert_eq!(c.matter.storage_dir, PathBuf::from("/var/lib/it-matters"));
         assert_eq!(c.bridge, BridgeConfig::default());
     }
@@ -264,13 +259,13 @@ mod tests {
     #[test]
     fn typos_are_rejected_in_test_builds() {
         assert!(Config::from_yaml("bridg: {}\n").is_err());
-        assert!(Config::from_yaml("matter: { prot: 1 }\n").is_err());
+        assert!(Config::from_yaml("matter: { prot: 1 }\n").is_err(), "the removed port option is now an unknown key");
     }
 
     #[test]
     fn malformed_yaml_reports_an_error() {
         assert!(Config::from_yaml("matter: [1, 2\n").is_err());
-        assert!(Config::from_yaml("matter: { port: lots }\n").is_err());
+        assert!(Config::from_yaml("matter: { discriminator: lots }\n").is_err());
     }
 
     fn problems(yaml: &str) -> String {
@@ -313,6 +308,12 @@ mod tests {
             "plugins:\n  - { id: a, connect: { listen: '127.0.0.1:1' } }\n  - { id: b, connect: { listen: '127.0.0.1:1' } }\n",
         );
         assert!(p.contains("already used"), "{p}");
+    }
+
+    #[test]
+    fn the_bridge_name_is_limited_to_32_characters() {
+        assert!(cfg(&format!("bridge: {{ name: {} }}", "a".repeat(32))).validate().is_ok());
+        assert!(problems(&format!("bridge: {{ name: {} }}", "a".repeat(33))).contains("at most 32"));
     }
 
     #[test]

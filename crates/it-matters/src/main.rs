@@ -1,6 +1,7 @@
 //! it-matters: a lightweight Matter bridge that hosts plugins.
 
 mod config;
+mod service;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -80,6 +81,7 @@ fn load(explicit: Option<PathBuf>) -> Result<(Config, Option<PathBuf>), String> 
 }
 
 fn main() -> ExitCode {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = match parse_args(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(e) => {
@@ -118,10 +120,13 @@ fn main() -> ExitCode {
             println!("configuration OK ({from}): {} plugin(s)", cfg.plugins.len());
             ExitCode::SUCCESS
         }
-        _ => {
-            eprintln!("it-matters: the Matter bridge is not implemented yet (configuration OK, {from})");
-            ExitCode::from(3)
-        }
+        _ => match service::run(cfg) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("it-matters: {e}");
+                ExitCode::from(1)
+            }
+        },
     }
 }
 
