@@ -18,6 +18,11 @@ USAGE:
 The config file is, in order: --config, $XDG_CONFIG_HOME/it-matters/config.yaml (or
 ~/.config/it-matters/config.yaml), /etc/it-matters/config.yaml. With no file, defaults apply.";
 
+/// Every command and flag the CLI accepts. `docs/usage.md` must document each one (a test checks it),
+/// and `parse_args` must accept each one.
+#[cfg(test)]
+const CLI_ITEMS: &[&str] = &["run", "check", "--config", "-c", "--help", "-h", "--version", "-V"];
+
 #[derive(Debug, PartialEq)]
 enum Command {
     Run,
@@ -144,5 +149,33 @@ mod tests {
     fn rejects_unknown_arguments_and_a_dangling_config_flag() {
         assert!(args(&["frobnicate"]).is_err());
         assert!(args(&["--config"]).is_err());
+    }
+
+    #[test]
+    fn every_cli_item_is_accepted_and_in_the_usage_text() {
+        for item in CLI_ITEMS {
+            let mut a = vec![item.to_string()];
+            if matches!(*item, "--config" | "-c") {
+                a.push("x.yaml".into());
+            }
+            assert!(parse_args(a).is_ok(), "{item} is not accepted by parse_args");
+            if item.starts_with("--") || matches!(*item, "run" | "check") {
+                assert!(USAGE.contains(item), "{item} is missing from the usage text");
+            }
+        }
+    }
+
+    #[test]
+    fn usage_guide_covers_every_cli_item() {
+        let guide = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/usage.md")).unwrap();
+        for item in CLI_ITEMS {
+            assert!(
+                guide
+                    .lines()
+                    .any(|l| l.starts_with("| `")
+                        && l.split('|').nth(1).is_some_and(|c| c.contains(&format!("`{item}")))),
+                "docs/usage.md has no table row for `{item}`: document every command and flag"
+            );
+        }
     }
 }

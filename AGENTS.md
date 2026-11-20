@@ -18,28 +18,49 @@ Matter side). Not built yet: the rs-matter frontend (`it-matters-matter`), wirin
 listener for remote plugins, the plugin SDK and the Linux plugins. `it-matters run` still only
 validates the config and exits with code 3.
 
-## ⚠️ Rule: keep the configuration documentation up to date
+## ⚠️ Rule: exhaustive documentation, kept current (configuration AND usage)
 
-**Whenever you add, rename, remove or change the meaning, type or default of ANY configuration
-option, you MUST update the documentation in the same change.** The docs are treated as part of the
-feature:
+**Every configuration option and every user-visible behaviour MUST be documented exhaustively, with
+usage examples, and the documentation MUST be updated in the same change as the code.** A feature,
+option, flag, message type, file location, exit code, environment variable or default that is not in
+the docs, with an example of using it, is not finished. This applies to every session, human or agent,
+now and in the future. Undocumented or stale docs are bugs.
 
-1. **`docs/config/*.md`**: every option has a table row whose first column is the full dotted path in
-   backticks (`` `plugins[].run.timeout_ms` ``; `[]` = each list entry, `<id>` = each map key), with
-   its type, default, when it applies (live / startup only) and description, in the page for that
-   section (index: `docs/config/README.md`). Keep each page's example YAML block correct too.
-2. **`examples/config.yaml`**: the worked example. A test loads it with the real types, rejecting
-   unknown keys, and validates it, so a typo or a removed option fails.
-3. **`README.md`** if it is user-visible behaviour.
-4. **`all_option_paths()`** in `crates/it-matters/src/config.rs` (tests): register every new config
-   struct with its path prefix. The tests `docs_cover_every_config_option` and
-   `docs_do_not_describe_options_that_do_not_exist` check both directions, but they do not verify the
-   accuracy of descriptions or defaults.
-5. Run `cargo test --workspace`. A failing docs test means the docs are out of date: fix the docs,
-   never the test.
+### What "exhaustive" means
 
-Before reporting a config change complete, compare each docs row against the implementation (type,
-actual default, validation, whether it applies live or at startup), and say what you could not verify.
+1. **Configuration reference (`docs/config/*.md`)**: *every* option has a table row whose first column
+   is the full dotted path in backticks (`` `plugins[].run.timeout_ms` ``; `[]` = each list entry,
+   `<id>` = each map key) with its type, default, when it applies (live / startup only), validation
+   rules and a description that says what it is for. Each page also has a `yaml` example block.
+   Index: `docs/config/README.md`. Document inheritance and interactions between options.
+2. **Usage guide (`docs/usage.md`)**: every CLI command and flag, exit codes, where files live, the
+   environment variables read, how to run it as a service, how to commission and use it with a
+   controller, and how to write and run a plugin, each with a copy-paste example. Keep the table of
+   commands and flags in step with the code (`CLI_ITEMS` in `crates/it-matters/src/main.rs`).
+3. **Plugin protocol (`docs/design/plugin-protocol.md`)**: every message and field, with examples,
+   in step with `crates/it-matters-model/src/protocol.rs`. Behaviours plugin authors depend on
+   (mapping rules, timeouts, liveness) are documented there.
+4. **Examples**: `examples/config.yaml` sets *every* option with a comment. Every `yaml` block in the
+   docs and README must be a **valid configuration** (a test loads each one with the real types); use a
+   `yml` fence for YAML that is deliberately not a config.
+5. **`README.md`** for anything a first-time user needs; **`docs/design/`** for decisions.
+6. **Say what exists.** Describe implemented behaviour as such; mark anything planned or not yet
+   implemented *explicitly* ("Status: not implemented yet"). When you implement it, remove the marker.
+
+### What you must do on every change
+
+* Adding, renaming, removing or changing the meaning, type, default or validation of an option:
+  update its row, the page's example, `examples/config.yaml`, and register any new config struct in
+  `all_option_paths()` (`crates/it-matters/src/config.rs`, tests).
+* Adding or changing a command, flag, message, file, env var, exit code or behaviour: update
+  `docs/usage.md` and/or the protocol doc, with an example.
+* Before reporting a change complete, **review the docs against the implementation** (type, actual
+  default, validation, live vs startup, examples still run) and list anything you could not verify.
+  Passing tests is not proof: the tests only check coverage and that examples parse. The docs tests are
+  `docs_cover_every_config_option`, `docs_do_not_describe_options_that_do_not_exist`,
+  `yaml_examples_in_docs_are_valid_configs` and `usage_guide_covers_every_cli_item`; a failure means the
+  docs are out of date: fix the docs, never the test.
+* Run `cargo test --workspace`.
 
 Every config struct has `#[cfg_attr(test, serde(deny_unknown_fields))]` (release builds ignore
 unknown keys on purpose so old and new files load; test builds reject them so the example and the

@@ -419,4 +419,47 @@ mod tests {
         }
         assert!(unknown.is_empty(), "documented options that don't exist (renamed or removed?): {unknown:#?}");
     }
+
+    /// The `yaml` blocks in the README and docs are usage examples: each must be a valid
+    /// configuration. Use a `yml` fence for YAML that is deliberately not a config.
+    #[test]
+    fn yaml_examples_in_docs_are_valid_configs() {
+        fn markdown_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    markdown_files(&p, out);
+                } else if p.extension().is_some_and(|x| x == "md") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = vec![root.join("README.md")];
+        markdown_files(&root.join("docs"), &mut files);
+        let mut checked = 0;
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let mut block: Option<String> = None;
+            for line in text.lines() {
+                match (&mut block, line.trim_end()) {
+                    (None, "```yaml") => block = Some(String::new()),
+                    (Some(b), "```") => {
+                        let cfg = Config::from_yaml(b)
+                            .unwrap_or_else(|e| panic!("{}: invalid yaml example: {e}\n{b}", file.display()));
+                        cfg.validate()
+                            .unwrap_or_else(|e| panic!("{}: example fails validation: {e:#?}\n{b}", file.display()));
+                        checked += 1;
+                        block = None;
+                    }
+                    (Some(b), l) => {
+                        b.push_str(l);
+                        b.push('\n');
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(checked >= 5, "expected the docs to contain yaml examples, found {checked}");
+    }
 }
