@@ -15,8 +15,8 @@ proven about rs-matter and why the design looks as it does). It is a young proje
 Done: the rs-matter spike, the workspace and config, the plugin host, the rs-matter frontend wired into
 `it-matters run`, the plugin supervisor (the daemon starts, restarts and stops `run` plugins), the Rust plugin
 SDK, and the two bundled Linux plugins (`it-matters-plugin-linux-system`, `it-matters-plugin-linux-audio`).
-Verified end to end with the matter.js controller, see `docs/testing/e2e.md`. Not built yet: the TCP + token
-listener for remote plugins, config reload, packaging (systemd units, installer), and verification with Home
+Verified end to end with the matter.js controller, see `docs/testing/e2e.md`. and remote (TCP) agents (challenge-response with a shared token, see `docs/design/plugin-protocol.md`). Not built yet: TLS for
+the agent connection, config reload, packaging (systemd units, installer), and verification with Home
 Assistant / Apple Home / Google Home.
 
 ## ⚠️ Rule: exhaustive documentation, kept current (configuration AND usage)
@@ -129,6 +129,13 @@ Planned crates (see the plan): `it-matters-matter` (the real frontend on rs-matt
   changes to it (group kill, SIGKILL escalation, post-exit cleanup, the line cap) as was done originally.
   PR_SET_PDEATHSIG fires when the *thread* that spawned the child exits, which is only safe because the
   daemon runs the supervisor on the main thread of a current-thread runtime: keep it that way.
+- **Remote agents (security-sensitive):** each TCP listener is pinned to one plugin id; the token is never sent
+  (HMAC proof over a fresh nonce, `it-matters-model/src/auth.rs`, which has a known-answer test against
+  Python); every failed login gets the same `authentication failed` after a delay; `connect` ids are refused
+  on the Unix socket; an authenticated reconnect replaces the stale session. The stream is **not
+  encrypted** and docs must keep saying so. Any change to `host.rs` access rules must be mutation-checked
+  (proof check, id pin, local refusal, replacement, nonce, delay, connection cap), as originally done.
+  Never log or print a token; error messages from `read_token_file` must not contain it.
 - **Plugins must never change the user's real system in tests.** The audio plugin's real-PipeWire tests use a
   temporary null sink (lowest priority) and assert the real default is untouched; keep it that way. Record
   anything you capture/modify, restore it, and check. Real-system tests are `#[ignore]`d (CI has no PipeWire

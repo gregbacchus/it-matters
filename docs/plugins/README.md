@@ -63,9 +63,48 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
-A user unit stops when the user logs out unless lingering is enabled (`loginctl enable-linger`). The bridge
-being on the same machine means "online" is only ever true while the computer runs; to see a computer's
-*power state* from another always-on bridge you need remote agents, which are not implemented yet.
+A user unit stops when the user logs out unless lingering is enabled (`loginctl enable-linger`). With the bridge
+on the same machine "online" is only ever true while the computer runs; to see a computer's *power state* from
+an always-on bridge, run the plugins as remote agents (next section).
+
+## Running on another machine as a remote agent
+
+Run the bridge on an always-on machine (a Raspberry Pi, a server) and the plugins on each desktop, connecting
+over TCP. When a desktop is switched off or loses its network its devices turn **unreachable within about 30
+seconds**, which is how you notice a computer going away. Setting it up:
+
+1. **On the bridge**, make a token and add a `connect` entry for the agent (one entry, port and token per agent):
+
+   ```bash
+   openssl rand -hex 32 > /etc/it-matters/desktop.token && chmod 600 /etc/it-matters/desktop.token
+   ```
+
+   ```yaml
+   plugins:
+     - id: desktop
+       connect:
+         listen: 192.168.1.10:7550          # the bridge machine's address on your LAN or VPN
+         token_file: /etc/it-matters/desktop.token
+   ```
+
+   Run `it-matters check`, restart the daemon, and open TCP 7550 to the desktop only.
+2. **Copy the token file to the desktop** (`scp`), keep it private (`chmod 600`).
+3. **On the desktop**, run the plugin with `--connect`, `--plugin-id` (the `id` above) and `--token-file`
+   (flags are on each plugin's page), under a systemd *user* unit so it starts at login and restarts:
+
+   ```yml
+   [Service]
+   ExecStart=/usr/local/bin/it-matters-plugin-linux-system --device office-pc --name "Office PC" \
+       --connect 192.168.1.10:7550 --plugin-id desktop --token-file %h/.config/it-matters/desktop.token
+   Restart=always
+   ```
+
+   (An untested sketch.) The plugin also reconnects by itself, so `Restart=` only matters if the process dies.
+
+If the connection drops, the plugin reconnects after 1, 2, 4, ... up to 30 seconds, and its devices return on the
+**same endpoints**. **The connection is not encrypted**: use a trusted LAN or a tunnel; see what the token does
+and does not protect in [the configuration reference](../config/plugins.md#what-this-protects-and-what-it-does-not).
+The audio plugin still needs the desktop user's PipeWire session, so on the desktop run it as that user.
 
 ## Testing
 

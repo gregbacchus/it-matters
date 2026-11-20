@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use it_matters_core::allocator::{Allocator, FileStore};
 use it_matters_core::frontend;
-use it_matters_core::host::{HostSettings, PluginSettings, bind_unix, serve_unix, spawn_host};
+use it_matters_core::host::{
+    HostSettings, MAX_TCP_CONNECTIONS, PluginSettings, bind_unix, serve_tcp, serve_unix, spawn_host,
+};
 use it_matters_core::registry::Registry;
 use it_matters_core::supervisor::{self, PluginProcess};
 use it_matters_matter::Settings;
@@ -26,7 +28,9 @@ pub fn host_settings(cfg: &Config) -> HostSettings {
             (p.id.clone(), PluginSettings { set_timeout: Duration::from_millis(ms) })
         })
         .collect();
-    HostSettings::new(plugins)
+    let mut settings = HostSettings::new(plugins);
+    settings.remote_plugins = cfg.plugins.iter().filter(|p| p.connect.is_some()).map(|p| p.id.clone()).collect();
+    settings
 }
 
 /// The processes to supervise: one per plugin that has `run`. Each gets the plugin socket and its own id
@@ -71,6 +75,20 @@ pub fn run(cfg: Config) -> Result<(), String> {
 }
 
 async fn serve(cfg: Config) -> Result<(), String> {
+    // Fail fast, before anything is started: unusable token files and ports that are already taken.
+    let loaded = crate::tokens::load(&cfg).map_err(|e| e.join("; "))?;
+    for w in &loaded.warnings {
+        log::warn!("{w}");
+    }
+    let mut tcp = Vec::new();
+    for p in &cfg.plugins {
+        let Some(c) = &p.connect else { continue };
+        let listener = tokio::net::TcpListener::bind(&c.listen)
+            .await
+            .map_err(|e| format!("plugin {:?}: cannot listen on {}: {e}", p.id, c.listen))?;
+        tcp.push((p.id.clone(), listener, loaded.tokens.get(&p.id).cloned()));
+    }
+
     let (host_end, frontend_end) = frontend::channel();
 
     // Matter first: it prints the pairing codes and fails fast if D-Bus/avahi are unavailable.
@@ -91,11 +109,15 @@ async fn serve(cfg: Config) -> Result<(), String> {
 
     let listener = bind_unix(&cfg.ipc.socket).map_err(|e| format!("{}: {e}", cfg.ipc.socket.display()))?;
     log::info!("plugins connect to {}", cfg.ipc.socket.display());
-    tokio::spawn(serve_unix(listener, host));
-
-    for p in cfg.plugins.iter().filter(|p| p.connect.is_some()) {
-        log::warn!("plugin {:?}: `connect` (remote TCP agents) is not implemented yet; it cannot connect", p.id);
+    for (id, listener, token) in tcp {
+        let addr = listener.local_addr().map_or_else(|_| "?".to_owned(), |a| a.to_string());
+        log::info!(
+            "plugin {id:?}: remote agent connects to {addr} ({})",
+            if token.is_some() { "token required" } else { "NO token: loopback only" }
+        );
+        tokio::spawn(serve_tcp(listener, host.clone(), id, token, MAX_TCP_CONNECTIONS));
     }
+    tokio::spawn(serve_unix(listener, host));
     // Started only now that the socket exists, so a plugin can connect at once.
     let plugins = supervisor::spawn(plugin_processes(&cfg), supervisor::Settings::default(), supervisor::log_sink());
 
@@ -160,6 +182,17 @@ mod tests {
             Config::from_yaml("ipc: { socket: run/p.sock }\nplugins: [{ id: a, run: { command: x } }]\n").unwrap();
         let socket = &plugin_processes(&cfg)[0].env[0].1;
         assert!(socket.starts_with('/') && socket.ends_with("run/p.sock"), "{socket}");
+    }
+
+    #[test]
+    fn connect_plugins_are_marked_remote_so_the_local_socket_refuses_them() {
+        let cfg = Config::from_yaml(
+            "plugins:\n  - { id: a, run: { command: x } }\n  - { id: b, connect: { listen: '127.0.0.1:1' } }\n",
+        )
+        .unwrap();
+        let s = host_settings(&cfg);
+        assert_eq!(s.remote_plugins.iter().collect::<Vec<_>>(), ["b"]);
+        assert!(s.plugins.contains_key("a") && s.plugins.contains_key("b"));
     }
 
     #[test]

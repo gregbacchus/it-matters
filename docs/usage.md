@@ -40,8 +40,8 @@ it-matters --help | --version
 
 | Command or flag | Description |
 |---|---|
-| `run` | Run the bridge until it receives `SIGINT` or `SIGTERM`. This is the default when no command is given. It validates the configuration, starts the Matter stack, binds the plugin socket and serves plugins. |
-| `check` | Load and validate the configuration and exit: `0` if it is valid, `1` with every problem listed otherwise. Use it in deployment scripts and before restarting the service. |
+| `run` | Run the bridge until it receives `SIGINT` or `SIGTERM`. This is the default when no command is given. It validates the configuration and reads the token files, binds the TCP ports of remote agents, starts the Matter stack, binds the plugin socket and serves plugins. |
+| `check` | Load and validate the configuration and exit: `0` if it is valid, `1` with every problem listed otherwise. **It also reads the token files** of remote agents (`plugins[].connect.token_file`), so it fails for a missing, empty or too short token, and prints warnings (a token file other users can read, an unencrypted network listener, a loopback listener without a token). Use it in deployment scripts and before restarting the service. |
 | `--config <file>`, `-c` | Use this configuration file. The file must exist; the search below is skipped. |
 | `--help`, `-h` | Print the usage text and exit with `0`. |
 | `--version`, `-V` | Print `it-matters <version>` and exit with `0`. |
@@ -68,7 +68,7 @@ each plugin it is waiting for, refused controller writes (with the reason) and s
 | Code | Meaning |
 |---|---|
 | `0` | Success: `check` found a valid configuration; `--help`, `--version`; `run` stopped after `SIGINT`/`SIGTERM`. |
-| `1` | The configuration file could not be read or parsed, or failed validation (every problem is printed to standard error); or `run` failed: for example the plugin socket cannot be bound, the state directory is unusable, avahi/D-Bus is unreachable, or the Matter stack stopped. |
+| `1` | The configuration file could not be read or parsed, or failed validation (every problem is printed to standard error); or `run` failed: for example the plugin socket or an agent's TCP port cannot be bound, the state directory is unusable, avahi/D-Bus is unreachable, or the Matter stack stopped. |
 | `2` | Unknown command line argument (the usage text is printed). |
 
 ### Where the configuration is read from
@@ -189,6 +189,37 @@ Home (see [what has been verified](matter.md#what-has-been-verified)).
 To pair again from scratch, stop the daemon and delete `matter.storage_dir`.
 A step-by-step procedure with the matter.js controller is in [`testing/e2e.md`](testing/e2e.md).
 
+## Plugins on other machines (remote agents)
+
+Status: works. Run the bridge on an always-on machine and the [bundled plugins](plugins/README.md) on each
+desktop; the desktop connects to a TCP port of the bridge and proves it knows a shared token. When the desktop
+goes away its devices become unreachable within about 30 seconds. On the bridge:
+
+```yaml
+plugins:
+  - id: desktop
+    connect:
+      listen: 192.168.1.10:7550
+      token_file: /etc/it-matters/desktop.token
+```
+
+```bash
+openssl rand -hex 32 > /etc/it-matters/desktop.token && chmod 600 /etc/it-matters/desktop.token
+it-matters check            # also checks the token file
+```
+
+On the desktop (after copying the token file there):
+
+```bash
+it-matters-plugin-linux-system --connect 192.168.1.10:7550 --plugin-id desktop --token-file ~/desktop.token
+```
+
+The token is never sent (the agent answers a random challenge with an HMAC), but **the connection is not
+encrypted**: use a trusted network or a tunnel. Everything is explained in
+[the configuration reference](config/plugins.md#remote-agents) and
+[bundled plugins](plugins/README.md#running-on-another-machine-as-a-remote-agent); the handshake is in the
+[protocol](design/plugin-protocol.md#remote-agents-tcp).
+
 ## Writing a plugin
 
 Status: works. The daemon starts plugins listed with `run`; you can also start one yourself.
@@ -199,7 +230,7 @@ microphone in use); see [bundled plugins](plugins/README.md). To write your own 
 [SDK](plugins/sdk.md).
 
 A plugin is any program that connects to the Unix socket (`ipc.socket`, default
-`/run/it-matters/plugins.sock`) and exchanges one JSON object per line. Its `plugin` id in `hello` must
+`/run/it-matters/plugins.sock`), or as a remote agent to a TCP port, and exchanges one JSON object per line. Its `plugin` id in `hello` must
 be listed under `plugins` in the daemon's configuration, otherwise the host answers with an `error` and
 closes the connection. A complete session, with `>` for what the plugin sends and `<` for what the host
 answers:
@@ -256,6 +287,9 @@ The full message reference, the device mapping rules and the liveness rules are 
   daemon keeps retrying with growing delays; fix the path and restart the daemon).
 * `[id] exited (...)` / `restarting in ...` over and over: the plugin crashes or exits immediately; read the
   `[id]` lines above it (the plugin's own output). The restart delay grows to 60 s.
+* A remote agent gets `authentication failed`: the token file differs from the bridge's, or `--plugin-id` is not
+  the id of the `connect` entry for this port. (The bridge answers both the same way; its log names the peer.)
+* The daemon fails with `cannot listen on ...: Address already in use`: another program uses the agent's port.
 * A plugin gets `plugin "x" is not configured`: add `x` under `plugins` in the configuration and restart.
 * A plugin gets `plugin "x" is already connected`: only one connection per plugin id is accepted (do not
   run a plugin by hand while the daemon also runs it); a dead connection is dropped when the plugin process

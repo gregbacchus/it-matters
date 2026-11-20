@@ -27,7 +27,11 @@ plugins:
   # The bundled audio plugin (speaker volume/mute, microphone in use) is configured the same way:
   #   command: /usr/local/bin/it-matters-plugin-linux-audio, args: [--device, office-pc-audio]
   # A remote agent (e.g. a desktop) that connects over TCP. Non-loopback needs a token file.
-  # NOT IMPLEMENTED YET: validated, but nothing listens (the daemon logs a warning at start).
+  # The bridge listens on `listen` for ONE agent; the agent proves it knows the token (never sent) and
+  # reconnects by itself. Not encrypted: use a trusted network or a tunnel. Create the token with
+  #   openssl rand -hex 32 > /etc/it-matters/agent.token && chmod 600 /etc/it-matters/agent.token
+  # and run on the desktop: it-matters-plugin-linux-system --connect <bridge>:7550 --plugin-id desktop-agent
+  #   --token-file <the same token>
   - id: desktop-agent
     connect:
       listen: 0.0.0.0:7550

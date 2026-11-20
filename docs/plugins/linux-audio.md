@@ -69,6 +69,7 @@ itself. The 1.5 second limit is fixed: leave the plugin's `run.timeout_ms` at 20
 
 ```
 it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] [--poll-ms <ms>]
+    [--connect <host:port> --plugin-id <id> [--token-file <file>]]
 ```
 
 | Flag | Default | Description |
@@ -77,6 +78,9 @@ it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] 
 | `--name <name>` | `<host name> Audio` | The name shown in controllers (`devices.<id>.name` in the daemon configuration overrides it). |
 | `--sink <target>` | `@DEFAULT_AUDIO_SINK@` | The speaker to control: `@DEFAULT_AUDIO_SINK@`, a node id, or a node name (see above). Anything else starting with `@` is rejected. |
 | `--poll-ms <ms>` | `1000` | How often to read the audio state, at least 100. |
+| `--connect <host:port>` | none | Run as a **remote agent**: connect to the bridge's TCP listener for this agent (`plugins[].connect.listen` in the bridge's configuration) instead of the local socket. Reconnects forever, with a delay that grows from 1 to 30 seconds. See [remote agents](README.md#running-on-another-machine-as-a-remote-agent). |
+| `--plugin-id <id>` | `$IT_MATTERS_PLUGIN_ID` | With `--connect`: the plugin `id` the bridge configured for this agent (required unless the environment variable is set). |
+| `--token-file <file>` | none | With `--connect`: the file holding the agent's token, the same as the bridge's `token_file`. Omit it only for a bridge listener on loopback without a token. |
 | `--help`, `-h` | | Print the usage text and exit `0`. |
 | `--version`, `-V` | | Print the version and exit `0`. |
 
@@ -102,6 +106,13 @@ plugins:
     run:
       command: /usr/local/bin/it-matters-plugin-linux-audio
       args: [--sink, alsa_output.pci-0000_c4_00.6.analog-stereo]
+```
+
+As a remote agent on the desktop (the bridge configures a `connect` entry with `id: desktop-audio`):
+
+```bash
+it-matters-plugin-linux-audio --device office-pc-audio --name "Office PC Audio" \
+    --connect 192.168.1.10:7551 --plugin-id desktop-audio --token-file ~/.config/it-matters/desktop-audio.token
 ```
 
 In the daemon's log the plugin appears as `[linux-audio]`:

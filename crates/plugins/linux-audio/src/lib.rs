@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use it_matters_model::{CapabilityKind, CapabilitySpec, DeviceSpec, Role, Value};
-use it_matters_plugin_sdk::{Client, Event, Events, SetRequest};
+use it_matters_plugin_sdk::{Client, Event, Events, RemoteOptions, SetRequest};
 use tokio::time::sleep;
 
 pub mod backend;
@@ -16,7 +16,8 @@ pub mod graph;
 use backend::{Audio, Reading, Target};
 
 /// Command line flags; `docs/plugins/linux-audio.md` must document each (a test checks it).
-pub const CLI_ITEMS: &[&str] = &["--device", "--name", "--sink", "--poll-ms", "--help", "--version"];
+pub const CLI_ITEMS: &[&str] =
+    &["--device", "--name", "--sink", "--poll-ms", "--connect", "--token-file", "--plugin-id", "--help", "--version"];
 
 pub const CAP_VOLUME: &str = "volume";
 pub const CAP_MUTE: &str = "mute";
@@ -56,6 +57,8 @@ pub struct Args {
     pub name: Option<String>,
     pub sink: Target,
     pub poll: Duration,
+    /// `--connect`, `--token-file`, `--plugin-id`: run as a remote agent instead of a daemon-started plugin.
+    pub remote: RemoteOptions,
 }
 
 pub enum Parsed {
@@ -67,7 +70,13 @@ pub enum Parsed {
 pub const DEFAULT_POLL: Duration = Duration::from_secs(1);
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
-    let mut out = Args { device: None, name: None, sink: Target::DefaultSink, poll: DEFAULT_POLL };
+    let mut out = Args {
+        device: None,
+        name: None,
+        sink: Target::DefaultSink,
+        poll: DEFAULT_POLL,
+        remote: RemoteOptions::default(),
+    };
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut value = |flag: &str| it.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -82,6 +91,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed, Stri
                 }
                 out.poll = Duration::from_millis(ms);
             }
+            flag @ ("--connect" | "--token-file" | "--plugin-id") => out.remote.set(flag, value(flag)?)?,
             "-h" | "--help" => return Ok(Parsed::Help),
             "-V" | "--version" => return Ok(Parsed::Version),
             other => return Err(format!("unknown argument {other:?}")),
@@ -208,6 +218,19 @@ mod tests {
     }
 
     #[test]
+    fn the_remote_agent_flags_are_parsed_and_validated() {
+        let Ok(Parsed::Run(a)) =
+            args(&["--connect", "192.168.1.5:7550", "--token-file", "/t", "--plugin-id", "desktop-audio"])
+        else {
+            panic!()
+        };
+        assert_eq!(a.remote.connect.as_deref(), Some("192.168.1.5:7550"));
+        assert_eq!(a.remote.plugin_id.as_deref(), Some("desktop-audio"));
+        assert!(args(&["--connect", "nohost"]).is_err());
+        assert!(args(&["--plugin-id", "Bad Id"]).is_err());
+    }
+
+    #[test]
     fn bad_arguments_are_rejected() {
         for bad in [&["--sink"][..], &["--sink", "@NOPE@"], &["--device", "Bad Id"], &["--poll-ms", "50"], &["--zzz"]] {
             assert!(args(bad).is_err(), "{bad:?}");
@@ -218,7 +241,9 @@ mod tests {
     fn every_cli_item_is_accepted() {
         for item in CLI_ITEMS {
             let a: Vec<&str> = match *item {
-                "--device" | "--name" | "--sink" => vec![item, "x1"],
+                "--device" | "--name" | "--sink" | "--token-file" => vec![item, "x1"],
+                "--connect" => vec![item, "h:1"],
+                "--plugin-id" => vec![item, "p"],
                 "--poll-ms" => vec![item, "1000"],
                 _ => vec![item],
             };

@@ -19,9 +19,10 @@ pub enum PluginMessage {
         plugin: String,
         version: String,
         proto: u32,
-        /// Shared secret; only checked on remote (TCP) connections.
+        /// Proof of knowing the agent's token (see [`crate::auth`]); only used on remote (TCP)
+        /// connections, where it answers the host's `challenge`. The token itself is never sent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        token: Option<String>,
+        proof: Option<String>,
     },
     /// Registers (or re-registers, after a reconnect) a device.
     Register {
@@ -52,6 +53,11 @@ pub enum PluginMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostMessage {
+    /// Sent first, unasked, on every remote (TCP) connection: a fresh random nonce the agent proves it
+    /// knows the token with, in its `hello`. Never sent on the local Unix socket.
+    Challenge {
+        nonce: String,
+    },
     /// The answer to a good `hello`.
     Welcome {
         proto: u32,
@@ -126,7 +132,7 @@ mod tests {
     use crate::{CapabilityKind, CapabilitySpec};
 
     fn hello() -> PluginMessage {
-        PluginMessage::Hello { plugin: "linux-system".into(), version: "0.1.0".into(), proto: 1, token: None }
+        PluginMessage::Hello { plugin: "linux-system".into(), version: "0.1.0".into(), proto: 1, proof: None }
     }
 
     #[test]
@@ -172,8 +178,8 @@ mod tests {
         );
         // Optional fields may be omitted on input, and are omitted on output.
         let m: PluginMessage = decode_line(r#"{"type":"hello","plugin":"a","version":"1","proto":1}"#).unwrap();
-        assert!(matches!(m, PluginMessage::Hello { token: None, .. }));
-        assert!(!encode_line(&hello()).unwrap().contains("token"));
+        assert!(matches!(m, PluginMessage::Hello { proof: None, .. }));
+        assert!(!encode_line(&hello()).unwrap().contains("proof"));
     }
 
     #[test]

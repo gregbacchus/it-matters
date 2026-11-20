@@ -16,18 +16,18 @@
 //! * the host pings every `ping_interval` and closes a session that sent nothing for `idle_timeout`;
 //! * a controller write is forwarded as `set`; the plugin must answer within its `set_timeout`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use it_matters_model::PROTO_VERSION;
 use it_matters_model::protocol::{
     FrameError, HostMessage, MAX_FRAME_BYTES, PluginMessage, decode_line, encode_line, proto_compatible,
 };
+use it_matters_model::{PROTO_VERSION, auth};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, interval_at, sleep_until, timeout};
+use tokio::time::{Instant, interval_at, sleep, sleep_until, timeout};
 
 use crate::allocator::Store;
 use crate::frontend::{ControllerCommand, FrontendEvent, HostEnd};
@@ -44,26 +44,47 @@ pub struct PluginSettings {
 #[derive(Debug, Clone)]
 pub struct HostSettings {
     pub plugins: BTreeMap<String, PluginSettings>,
+    /// Plugins that are remote agents: they may only connect through their own TCP listener, never over
+    /// the local Unix socket (where they would not need to prove anything).
+    pub remote_plugins: BTreeSet<String>,
     pub handshake_timeout: Duration,
     pub ping_interval: Duration,
     pub idle_timeout: Duration,
+    /// How long a failed authentication waits before it is answered (slows guessing).
+    pub auth_failure_delay: Duration,
 }
 
 impl HostSettings {
     pub fn new(plugins: BTreeMap<String, PluginSettings>) -> Self {
         Self {
             plugins,
+            remote_plugins: BTreeSet::new(),
             handshake_timeout: Duration::from_secs(5),
             ping_interval: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(30),
+            auth_failure_delay: Duration::from_millis(500),
         }
     }
 }
 
 enum Input {
-    Connect { plugin: String, out: mpsc::Sender<HostMessage>, reply: oneshot::Sender<Result<u64, String>> },
-    Message { plugin: String, session: u64, msg: PluginMessage },
-    Gone { plugin: String, session: u64 },
+    Connect {
+        plugin: String,
+        out: mpsc::Sender<HostMessage>,
+        /// An authenticated remote agent replaces a session that is still registered (almost certainly a
+        /// half-open connection from before a reboot or a network drop).
+        replace: bool,
+        reply: oneshot::Sender<Result<u64, String>>,
+    },
+    Message {
+        plugin: String,
+        session: u64,
+        msg: PluginMessage,
+    },
+    Gone {
+        plugin: String,
+        session: u64,
+    },
 }
 
 /// A cloneable handle for handing connections to the host.
@@ -94,13 +115,85 @@ pub fn spawn_host<S: Store + Send + 'static>(
     (HostHandle { input, settings }, tokio::spawn(actor.run(rx)))
 }
 
+/// How a connection is authenticated and which plugin it may be.
+#[derive(Clone)]
+pub struct Access {
+    /// A remote (TCP) connection: the host speaks first with a challenge, and only the listener's own
+    /// plugin may connect.
+    remote: bool,
+    only_plugin: Option<String>,
+    /// The listener's token; `None` means no proof is required (a loopback listener without a token).
+    token: Option<Arc<Vec<u8>>>,
+    /// For logs only.
+    peer: String,
+}
+
+impl Access {
+    /// The local Unix socket: any configured, non-remote plugin; trust comes from the socket's permissions.
+    pub fn local() -> Self {
+        Self { remote: false, only_plugin: None, token: None, peer: "local socket".into() }
+    }
+
+    /// A TCP listener that serves exactly one plugin.
+    pub fn tcp(plugin: &str, token: Option<Arc<Vec<u8>>>, peer: impl Into<String>) -> Self {
+        Self { remote: true, only_plugin: Some(plugin.to_owned()), token, peer: peer.into() }
+    }
+}
+
 impl HostHandle {
-    /// Runs one connection. The returned task ends when the session does.
+    /// Runs one local connection. The returned task ends when the session does.
     pub fn accept<T>(&self, stream: T) -> JoinHandle<()>
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        tokio::spawn(run_session(stream, self.clone()))
+        self.accept_with(stream, Access::local())
+    }
+
+    /// Runs one connection with the given access policy.
+    pub fn accept_with<T>(&self, stream: T, access: Access) -> JoinHandle<()>
+    where
+        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        tokio::spawn(run_session(stream, self.clone(), access))
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// TCP
+// -------------------------------------------------------------------------------------------------
+
+/// The most agent connections one TCP listener serves at once.
+pub const MAX_TCP_CONNECTIONS: usize = 16;
+
+/// Accepts remote agent connections for **one** plugin until the task is dropped. With a `token` the agent
+/// must prove it knows it; the token is the identity, so a second authenticated connection for the same
+/// plugin replaces the first. Without a token (only sensible on a loopback address) anyone who can reach the
+/// port is the plugin, and a second connection is refused while the first lives.
+pub async fn serve_tcp(
+    listener: tokio::net::TcpListener,
+    host: HostHandle,
+    plugin: String,
+    token: Option<Vec<u8>>,
+    max_connections: usize,
+) {
+    let token = token.map(Arc::new);
+    let slots = Arc::new(tokio::sync::Semaphore::new(max_connections));
+    loop {
+        let Ok(permit) = slots.clone().acquire_owned().await else { return };
+        match listener.accept().await {
+            Ok((stream, peer)) => {
+                let _ = stream.set_nodelay(true);
+                let session = host.accept_with(stream, Access::tcp(&plugin, token.clone(), peer.to_string()));
+                tokio::spawn(async move {
+                    let _ = session.await;
+                    drop(permit);
+                });
+            }
+            Err(_) => {
+                drop(permit);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 }
 
@@ -232,14 +325,14 @@ fn parse(frame: &[u8]) -> Result<PluginMessage, String> {
 // Session
 // -------------------------------------------------------------------------------------------------
 
-async fn run_session<T>(stream: T, host: HostHandle)
+async fn run_session<T>(stream: T, host: HostHandle, access: Access)
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (rd, mut wr) = tokio::io::split(stream);
     let (in_tx, mut in_rx) = mpsc::channel(16);
     let reader = tokio::spawn(read_loop(rd, in_tx));
-    if let Some((plugin, session)) = session(&mut wr, &mut in_rx, &host).await {
+    if let Some((plugin, session)) = session(&mut wr, &mut in_rx, &host, &access).await {
         let _ = host.input.send(Input::Gone { plugin, session }).await;
     }
     reader.abort();
@@ -251,11 +344,21 @@ async fn session<W: AsyncWrite + Unpin>(
     wr: &mut W,
     in_rx: &mut mpsc::Receiver<Inbound>,
     host: &HostHandle,
+    access: &Access,
 ) -> Option<(String, u64)> {
     let s = &host.settings;
     // Tells the plugin why, then ends the session (a rejected plugin has nothing to report as gone).
     let fail = async |wr: &mut W, message: String| -> Option<(String, u64)> {
         let _ = write_msg(wr, &HostMessage::Error { message }).await;
+        None
+    };
+
+    // A remote agent is challenged before it says anything: a fresh nonce it must answer in its hello.
+    let nonce = if access.remote {
+        let nonce = auth::new_nonce().ok()?;
+        write_msg(wr, &HostMessage::Challenge { nonce: nonce.clone() }).await.ok()?;
+        Some(nonce)
+    } else {
         None
     };
 
@@ -266,20 +369,40 @@ async fn session<W: AsyncWrite + Unpin>(
         Ok(Some(Inbound::TooLong)) => return fail(wr, "frame too long".into()).await,
         Ok(Some(Inbound::Frame(f))) => f,
     };
-    let (plugin, proto) = match parse(&first) {
-        Ok(PluginMessage::Hello { plugin, proto, .. }) => (plugin, proto),
+    let (plugin, proto, proof) = match parse(&first) {
+        Ok(PluginMessage::Hello { plugin, proto, proof, .. }) => (plugin, proto, proof),
         Ok(_) => return fail(wr, "the first message must be hello".into()).await,
         Err(e) => return fail(wr, e).await,
     };
     if !proto_compatible(proto) {
         return fail(wr, format!("unsupported protocol {proto}; this host speaks {PROTO_VERSION}")).await;
     }
-    if !s.plugins.contains_key(&plugin) {
+    if access.remote {
+        // One generic answer for every way of failing, so a refusal says nothing about which plugin ids
+        // exist or whether the token or the id was wrong.
+        let right_plugin = access.only_plugin.as_deref() == Some(plugin.as_str()) && s.plugins.contains_key(&plugin);
+        let proven = match (&access.token, &nonce) {
+            (Some(token), Some(nonce)) => proof.as_deref().is_some_and(|p| auth::verify(token, nonce, &plugin, p)),
+            _ => true,
+        };
+        if !(right_plugin & proven) {
+            log::warn!(target: "host", "authentication failed for a remote agent from {} (claimed plugin {plugin:?})", access.peer);
+            sleep(s.auth_failure_delay).await;
+            return fail(wr, "authentication failed".into()).await;
+        }
+    } else if s.remote_plugins.contains(&plugin) {
+        return fail(
+            wr,
+            format!("plugin {plugin:?} is a remote agent: it connects to its own TCP listener, not this socket"),
+        )
+        .await;
+    } else if !s.plugins.contains_key(&plugin) {
         return fail(wr, format!("plugin {plugin:?} is not configured")).await;
     }
     let (out_tx, mut out_rx) = mpsc::channel::<HostMessage>(64);
     let (reply_tx, reply_rx) = oneshot::channel();
-    host.input.send(Input::Connect { plugin: plugin.clone(), out: out_tx, reply: reply_tx }).await.ok()?;
+    let replace = access.remote && access.token.is_some();
+    host.input.send(Input::Connect { plugin: plugin.clone(), out: out_tx, replace, reply: reply_tx }).await.ok()?;
     let id = match reply_rx.await {
         Ok(Ok(id)) => id,
         Ok(Err(e)) => return fail(wr, e).await,
@@ -395,7 +518,15 @@ impl<S: Store + Send + 'static> Actor<S> {
 
     async fn input(&mut self, input: Input) {
         match input {
-            Input::Connect { plugin, out, reply } => {
+            Input::Connect { plugin, out, replace, reply } => {
+                if replace && let Some(old) = self.sessions.remove(&plugin) {
+                    // The old session is dropped (its connection closes); whatever it was asked to do fails.
+                    let stale: Vec<u64> =
+                        self.pending.iter().filter(|(_, p)| p.session == old.id).map(|(id, _)| *id).collect();
+                    for id in stale {
+                        self.finish(id, Err("the plugin reconnected".into())).await;
+                    }
+                }
                 let result = if self.sessions.contains_key(&plugin) {
                     Err(format!("plugin {plugin:?} is already connected"))
                 } else {

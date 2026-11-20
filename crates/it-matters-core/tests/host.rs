@@ -88,7 +88,7 @@ impl Client {
 }
 
 fn hello(plugin: &str) -> PluginMessage {
-    PluginMessage::Hello { plugin: plugin.into(), version: "test".into(), proto: 1, token: None }
+    PluginMessage::Hello { plugin: plugin.into(), version: "test".into(), proto: 1, proof: None }
 }
 
 fn cap(id: &str, kind: CapabilityKind, writable: bool, role: Option<Role>) -> CapabilitySpec {
@@ -157,7 +157,7 @@ async fn handshake_problems_close_the_connection() {
     assert_eq!(c.recv().await, None);
     // Wrong protocol version.
     let mut c = Client::connect(&f);
-    c.send(&PluginMessage::Hello { plugin: "p".into(), version: "x".into(), proto: 99, token: None }).await;
+    c.send(&PluginMessage::Hello { plugin: "p".into(), version: "x".into(), proto: 99, proof: None }).await;
     assert!(matches!(c.recv().await, Some(HostMessage::Error { message }) if message.contains("unsupported protocol")));
     assert_eq!(c.recv().await, None);
     // Garbage.
@@ -457,4 +457,291 @@ async fn bind_unix_replaces_a_stale_socket_but_never_deletes_other_files() {
     assert!(err.to_string().contains("not a socket"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "precious");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---- remote agents over TCP -------------------------------------------------------------------------
+
+mod tcp {
+    use std::sync::Arc;
+
+    use it_matters_core::host::{Access, serve_tcp};
+    use it_matters_model::auth;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::sleep;
+
+    use super::*;
+
+    const TOKEN: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+    struct Agent {
+        rd: BufReader<tokio::net::tcp::OwnedReadHalf>,
+        wr: tokio::net::tcp::OwnedWriteHalf,
+    }
+
+    impl Agent {
+        async fn connect(addr: std::net::SocketAddr) -> Agent {
+            let (rd, wr) = TcpStream::connect(addr).await.unwrap().into_split();
+            Agent { rd: BufReader::new(rd), wr }
+        }
+        async fn recv(&mut self) -> Option<HostMessage> {
+            let mut line = String::new();
+            match self.rd.read_line(&mut line).await {
+                Ok(0) | Err(_) => None,
+                Ok(_) => Some(decode_line(&line).unwrap()),
+            }
+        }
+        async fn nonce(&mut self) -> String {
+            match self.recv().await {
+                Some(HostMessage::Challenge { nonce }) => nonce,
+                other => panic!("expected a challenge first, got {other:?}"),
+            }
+        }
+        async fn send(&mut self, m: &PluginMessage) {
+            self.wr.write_all(encode_line(m).unwrap().as_bytes()).await.unwrap();
+        }
+        async fn hello(&mut self, plugin: &str, proof: Option<String>) {
+            self.send(&PluginMessage::Hello { plugin: plugin.into(), version: "t".into(), proto: 1, proof }).await;
+        }
+        /// A full, correct login.
+        async fn login(addr: std::net::SocketAddr, token: &[u8], plugin: &str) -> Agent {
+            let mut a = Agent::connect(addr).await;
+            let nonce = a.nonce().await;
+            a.hello(plugin, Some(auth::proof(token, &nonce, plugin))).await;
+            assert_eq!(a.recv().await, Some(HostMessage::Welcome { proto: 1 }));
+            a
+        }
+        async fn expect_auth_failure(&mut self) {
+            assert!(
+                matches!(self.recv().await, Some(HostMessage::Error { message }) if message == "authentication failed")
+            );
+            assert_eq!(self.recv().await, None, "the connection is closed after a failure");
+        }
+    }
+
+    struct Bridge {
+        host: HostHandle,
+        fake: FakeFrontend,
+        addr: std::net::SocketAddr,
+        _actor: JoinHandle<()>,
+    }
+
+    /// A host with a local plugin `p` and a remote agent `agent`, served by one TCP listener.
+    async fn bridge(token: Option<&[u8]>, max_connections: usize) -> Bridge {
+        let mut settings = settings();
+        settings.plugins.insert("agent".into(), PluginSettings { set_timeout: SET_TIMEOUT });
+        settings.remote_plugins.insert("agent".into());
+        settings.auth_failure_delay = Duration::from_millis(30);
+        let (host_end, frontend_end) = frontend::channel();
+        let registry = Registry::new(Allocator::open(MemoryStore::default()).unwrap(), BTreeMap::new());
+        let (host, actor) = spawn_host(settings, registry, host_end);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve_tcp(listener, host.clone(), "agent".into(), token.map(<[u8]>::to_vec), max_connections));
+        Bridge { host, fake: FakeFrontend::new(frontend_end), addr, _actor: actor }
+    }
+
+    async fn event(b: &Bridge) -> FrontendEvent {
+        timeout(Duration::from_secs(3), b.fake.next_event()).await.expect("no event").unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_correct_proof_logs_the_agent_in_and_its_devices_reach_the_matter_side() {
+        let b = bridge(Some(TOKEN), 4).await;
+        let mut a = Agent::login(b.addr, TOKEN, "agent").await;
+        a.send(&PluginMessage::Register { device: pc() }).await;
+        assert!(matches!(event(&b).await, FrontendEvent::AddEndpoint(_)));
+    }
+
+    #[tokio::test]
+    async fn the_host_speaks_first_with_a_different_nonce_each_time() {
+        let b = bridge(Some(TOKEN), 4).await;
+        let (mut a1, mut a2) = (Agent::connect(b.addr).await, Agent::connect(b.addr).await);
+        let (n1, n2) = (a1.nonce().await, a2.nonce().await);
+        assert_ne!(n1, n2);
+        assert_eq!(n1.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_token_a_missing_proof_and_garbage_are_all_refused_the_same_way() {
+        let b = bridge(Some(TOKEN), 4).await;
+        for proof in [
+            Some(auth::proof(b"another-token-another-token-xxxxx", "00", "agent")), // computed with a wrong token (and nonce)
+            None,
+            Some("not hex".to_owned()),
+            Some(String::new()),
+        ] {
+            let mut a = Agent::connect(b.addr).await;
+            a.nonce().await;
+            a.hello("agent", proof).await;
+            a.expect_auth_failure().await;
+        }
+        let mut a = Agent::connect(b.addr).await;
+        let nonce = a.nonce().await;
+        a.hello("agent", Some(auth::proof(b"another-token-another-token-xxxxx", &nonce, "agent"))).await;
+        a.expect_auth_failure().await; // the right nonce but the wrong token
+    }
+
+    #[tokio::test]
+    async fn a_failed_login_is_answered_only_after_a_delay() {
+        let b = bridge(Some(TOKEN), 4).await; // the test host uses a 30 ms delay
+        let mut a = Agent::connect(b.addr).await;
+        a.nonce().await;
+        let t = std::time::Instant::now();
+        a.hello("agent", None).await;
+        a.expect_auth_failure().await;
+        assert!(t.elapsed() >= Duration::from_millis(25), "answered too fast: {:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn a_proof_recorded_from_another_connection_is_useless() {
+        let b = bridge(Some(TOKEN), 4).await;
+        let mut first = Agent::connect(b.addr).await;
+        let old_nonce = first.nonce().await;
+        let recorded = auth::proof(TOKEN, &old_nonce, "agent");
+        first.hello("agent", Some(recorded.clone())).await;
+        assert_eq!(first.recv().await, Some(HostMessage::Welcome { proto: 1 }), "the genuine login works");
+        // An eavesdropper replays the recorded proof on a new connection (which has a new nonce).
+        let mut replay = Agent::connect(b.addr).await;
+        replay.nonce().await;
+        replay.hello("agent", Some(recorded)).await;
+        replay.expect_auth_failure().await;
+    }
+
+    #[tokio::test]
+    async fn a_proof_for_one_plugin_cannot_be_used_for_another() {
+        let b = bridge(Some(TOKEN), 4).await;
+        // Valid token, but the claimed plugin is a different (local) one: this listener serves `agent` only.
+        let mut a = Agent::connect(b.addr).await;
+        let nonce = a.nonce().await;
+        a.hello("p", Some(auth::proof(TOKEN, &nonce, "p"))).await;
+        a.expect_auth_failure().await;
+        // And an id that is not configured at all gets the identical answer.
+        let mut a = Agent::connect(b.addr).await;
+        let nonce = a.nonce().await;
+        a.hello("ghost", Some(auth::proof(TOKEN, &nonce, "ghost"))).await;
+        a.expect_auth_failure().await;
+        // A proof computed for `agent` does not verify for `p`.
+        let mut a = Agent::connect(b.addr).await;
+        let nonce = a.nonce().await;
+        a.hello("p", Some(auth::proof(TOKEN, &nonce, "agent"))).await;
+        a.expect_auth_failure().await;
+    }
+
+    #[tokio::test]
+    async fn a_remote_agents_id_cannot_be_claimed_on_the_local_socket() {
+        let b = bridge(Some(TOKEN), 4).await;
+        let (end, local) = tokio::io::duplex(1 << 16);
+        b.host.accept(local);
+        let (rd, mut wr) = tokio::io::split(end);
+        wr.write_all(encode_line(&hello("agent")).unwrap().as_bytes()).await.unwrap();
+        let mut line = String::new();
+        BufReader::new(rd).read_line(&mut line).await.unwrap();
+        let msg: HostMessage = decode_line(&line).unwrap();
+        assert!(matches!(&msg, HostMessage::Error { message } if message.contains("remote agent")), "{msg:?}");
+        // Local plugins still work on the local socket.
+        let (end, local) = tokio::io::duplex(1 << 16);
+        b.host.accept(local);
+        let (rd, mut wr) = tokio::io::split(end);
+        wr.write_all(encode_line(&hello("p")).unwrap().as_bytes()).await.unwrap();
+        let mut line = String::new();
+        BufReader::new(rd).read_line(&mut line).await.unwrap();
+        assert_eq!(decode_line::<HostMessage>(&line).unwrap(), HostMessage::Welcome { proto: 1 });
+    }
+
+    #[tokio::test]
+    async fn a_reconnecting_agent_replaces_its_stale_session_and_keeps_its_endpoints() {
+        let b = bridge(Some(TOKEN), 4).await;
+        let mut old = Agent::login(b.addr, TOKEN, "agent").await;
+        old.send(&PluginMessage::Register { device: pc() }).await;
+        assert!(matches!(event(&b).await, FrontendEvent::AddEndpoint(_)));
+        // The machine rebooted: a new connection arrives while the host still holds the old one.
+        let mut new = Agent::login(b.addr, TOKEN, "agent").await;
+        assert_eq!(old.recv().await, None, "the stale session is closed");
+        new.send(&PluginMessage::Register { device: pc() }).await;
+        assert_eq!(event(&b).await, FrontendEvent::SetReachable { endpoint: 2, reachable: true }, "the same endpoint");
+        sleep(Duration::from_millis(100)).await;
+        assert!(b.fake.drain().is_empty(), "no unreachable blip and no new endpoint");
+    }
+
+    #[tokio::test]
+    async fn a_write_in_flight_to_a_replaced_session_fails_instead_of_hanging() {
+        let b = bridge(Some(TOKEN), 4).await;
+        let mut old = Agent::login(b.addr, TOKEN, "agent").await;
+        old.send(&PluginMessage::Register { device: audio() }).await;
+        event(&b).await;
+        let answer = b.fake.write(2, Write::OnOff(false)).await;
+        assert!(matches!(old.recv().await, Some(HostMessage::Set { .. })));
+        let _new = Agent::login(b.addr, TOKEN, "agent").await;
+        assert_eq!(answer.recv().await.unwrap(), Err("the plugin reconnected".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn without_a_token_nothing_is_proven_and_a_second_connection_does_not_replace_the_first() {
+        let b = bridge(None, 4).await; // a loopback listener without a token
+        let mut first = Agent::connect(b.addr).await;
+        first.nonce().await;
+        first.hello("agent", None).await;
+        assert_eq!(first.recv().await, Some(HostMessage::Welcome { proto: 1 }));
+        let mut second = Agent::connect(b.addr).await;
+        second.nonce().await;
+        second.hello("agent", None).await;
+        assert!(
+            matches!(second.recv().await, Some(HostMessage::Error { message }) if message.contains("already connected"))
+        );
+        // The id is still pinned to the listener.
+        let mut other = Agent::connect(b.addr).await;
+        other.nonce().await;
+        other.hello("p", None).await;
+        other.expect_auth_failure().await;
+    }
+
+    #[tokio::test]
+    async fn the_number_of_connections_per_listener_is_capped() {
+        let b = bridge(Some(TOKEN), 1).await;
+        let mut held = Agent::connect(b.addr).await;
+        held.nonce().await;
+        let mut waiting = Agent::connect(b.addr).await;
+        // The second connection is not served (no challenge) while the first holds the only slot.
+        assert!(timeout(Duration::from_millis(300), waiting.recv()).await.is_err());
+        drop(held);
+        waiting.nonce().await; // the slot was freed
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_goes_silent_is_dropped_by_the_heartbeat_and_its_devices_become_unreachable() {
+        // This is how a computer that lost power is noticed: its connection just stops answering.
+        let mut s = settings();
+        s.plugins.insert("agent".into(), PluginSettings { set_timeout: SET_TIMEOUT });
+        s.remote_plugins.insert("agent".into());
+        s.ping_interval = Duration::from_millis(40);
+        s.idle_timeout = Duration::from_millis(200);
+        let (host_end, frontend_end) = frontend::channel();
+        let registry = Registry::new(Allocator::open(MemoryStore::default()).unwrap(), BTreeMap::new());
+        let (host, _actor) = spawn_host(s, registry, host_end);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve_tcp(listener, host, "agent".into(), Some(TOKEN.to_vec()), 4));
+        let fake = FakeFrontend::new(frontend_end);
+
+        let mut a = Agent::login(addr, TOKEN, "agent").await;
+        a.send(&PluginMessage::Register { device: pc() }).await;
+        assert!(matches!(
+            timeout(Duration::from_secs(2), fake.next_event()).await.unwrap().unwrap(),
+            FrontendEvent::AddEndpoint(_)
+        ));
+        // The agent reads but never answers (a frozen or powered-off machine).
+        let drain = async { while a.recv().await.is_some() {} };
+        timeout(Duration::from_secs(3), drain).await.expect("the silent agent was never dropped");
+        assert_eq!(
+            timeout(Duration::from_secs(2), fake.next_event()).await.unwrap().unwrap(),
+            FrontendEvent::SetReachable { endpoint: 2, reachable: false }
+        );
+    }
+
+    #[test]
+    fn the_access_policy_for_tcp_is_pinned_to_one_plugin() {
+        // Constructing it is part of the public API: a listener is always bound to exactly one plugin.
+        let _ = Access::tcp("agent", Some(Arc::new(TOKEN.to_vec())), "1.2.3.4:5");
+        let _ = Access::local();
+    }
 }

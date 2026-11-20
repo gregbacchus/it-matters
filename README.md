@@ -15,7 +15,7 @@ machine and desktop agents connecting to it.
 > devices appear, disappear and go unreachable live. Verified with the matter.js controller on Linux; **not yet
 > verified with Home Assistant, Apple Home or Google Home**. The daemon starts, restarts and stops the plugins
 > you list, and two Linux desktop plugins are bundled (online / signed in, speaker volume and mute, microphone
-> in use). Not built yet: remote (TCP) plugin agents and packaging. See [`docs/usage.md`](docs/usage.md).
+> in use). Plugins can also run on other machines as authenticated remote agents (not encrypted: use a trusted network or tunnel). Not built yet: TLS and packaging. See [`docs/usage.md`](docs/usage.md).
 
 ## Try it
 

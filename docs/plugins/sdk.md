@@ -62,6 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `Event::Set(SetRequest)` | A controller wrote a writable capability. `request.accept()` or `request.refuse(reason)` **must** be called, within the plugin's `timeout_ms`; the type is `#[must_use]`. |
 | `Event::HostError(message)` | The host rejected something; the connection stays open. |
 | `Event::Closed(reason)` | The connection ended. Exit; the daemon's supervisor restarts the plugin, which registers from scratch. |
+| `connect_tcp(addr, plugin_id, version, token)` | Connects to a bridge's TCP listener as a **remote agent**: reads the host's challenge, answers with a proof from `token` (never sent), and does the handshake. A wrong or missing token is `Error::Refused("authentication failed")`. Not encrypted. |
+| `Target`, `RemoteOptions` | Where to connect: `Target::Local { socket, plugin_id }` (started by the daemon) or `Target::Remote { addr, plugin_id, token }`. `RemoteOptions` holds the `--connect`, `--token-file` and `--plugin-id` flags every bundled plugin accepts and turns them (and the environment) into a `Target`. |
+| `Connector` | `connect()` once; `reconnects()` is true for a remote target; `wait()` sleeps 1, 2, 4, ... 30 s; `reset()` after a good connection. A remote agent loops over these forever (and re-registers each time); a local plugin just exits and lets the daemon restart it. |
 | `sanitize_id(text, fallback)` | Turns text such as a host name into a valid id. |
 
 Rules of thumb: one task should own the thing you control (so a poll and a write never overlap, as in

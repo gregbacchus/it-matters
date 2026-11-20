@@ -5,13 +5,14 @@ use std::process::ExitCode;
 use it_matters_plugin_linux_audio::backend::Wpctl;
 use it_matters_plugin_linux_audio::exec::RealExec;
 use it_matters_plugin_linux_audio::{Parsed, parse_args, run};
-use it_matters_plugin_sdk::{Env, connect, sanitize_id};
+use it_matters_plugin_sdk::{Connector, Target, sanitize_id};
 
 const USAGE: &str = "\
 it-matters-plugin-linux-audio: the speaker's volume and mute, and whether a microphone is in use
 
 USAGE:
     it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] [--poll-ms <ms>]
+                                  [--connect <host:port> --plugin-id <id> [--token-file <file>]]
 
 OPTIONS:
     --device <id>     device id (default: <host name>-audio)
@@ -19,12 +20,15 @@ OPTIONS:
     --sink <target>   the speaker to control: @DEFAULT_AUDIO_SINK@ (default), a PipeWire node id, or a
                       node name such as alsa_output.pci-0000_c4_00.6.analog-stereo
     --poll-ms <ms>    how often to read the audio state, at least 100 (default 1000)
+    --connect <addr>  run as a remote agent: connect to the bridge's TCP listener for this agent
+    --plugin-id <id>  with --connect: the plugin id the bridge configured for this agent
+    --token-file <f>  with --connect: file holding the agent's token (see the bridge's token_file)
     -h, --help        print this text
     -V, --version     print the version
 
 Needs PipeWire with WirePlumber (`wpctl`, `pw-dump`) and the desktop user's XDG_RUNTIME_DIR, so run it
 as that user. Meant to be started by the it-matters daemon (a `run` plugin), which sets
-IT_MATTERS_SOCKET and IT_MATTERS_PLUGIN_ID.";
+IT_MATTERS_SOCKET and IT_MATTERS_PLUGIN_ID; or, with --connect, run on another machine as a remote agent.";
 
 fn host_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_owned()).unwrap_or_default()
@@ -57,15 +61,31 @@ async fn main() -> ExitCode {
     let name =
         args.name.unwrap_or_else(|| if host.is_empty() { "Computer Audio".into() } else { format!("{host} Audio") });
 
-    let env = match Env::from_env() {
-        Ok(e) => e,
-        Err(e) => return fail(e),
-    };
     let mut audio = Wpctl::new(RealExec::default(), args.sink);
-    let (client, mut events) = match connect(&env.socket, &env.plugin_id, env!("CARGO_PKG_VERSION")).await {
-        Ok(c) => c,
+    let target = match args.remote.into_target(|k| std::env::var(k).ok()) {
+        Ok(t) => t,
         Err(e) => return fail(e),
     };
-    println!("connected as plugin {:?}; device {device:?} ({name})", env.plugin_id);
-    fail(run(&client, &mut events, &mut audio, &device, &name, args.poll).await)
+    let remote = target.reconnects();
+    if let Target::Remote { addr, plugin_id, .. } = &target {
+        println!("running as a remote agent for plugin {plugin_id:?} of the bridge at {addr}");
+    }
+    let mut connector = Connector::new(target, env!("CARGO_PKG_VERSION"));
+    loop {
+        match connector.connect().await {
+            Ok((client, mut events)) => {
+                println!("connected as plugin {:?}; device {device:?} ({name})", connector.target().plugin_id());
+                connector.reset();
+                let reason = run(&client, &mut events, &mut audio, &device, &name, args.poll).await;
+                eprintln!("it-matters-plugin-linux-audio: disconnected: {reason}");
+            }
+            Err(e) => eprintln!("it-matters-plugin-linux-audio: {e}"),
+        }
+        // A plugin the daemon started just exits: the daemon restarts it. A remote agent has nobody to do
+        // that, so it reconnects (with a growing delay) forever.
+        if !remote {
+            return ExitCode::from(1);
+        }
+        connector.wait().await;
+    }
 }

@@ -12,13 +12,41 @@ a plugin can use them instead of hard-coded values. A plugin that exits is resta
 so a plugin should simply reconnect from scratch (`hello`, then `register` and `update` everything again)
 every time it starts. See [the configuration reference](../config/plugins.md#how-the-daemon-runs-a-run-plugin).
 
+## Remote agents (TCP)
+
+A plugin on another machine connects to the TCP listener the bridge configured for it (`plugins[].connect`).
+The wire format is the same; the handshake differs in two ways:
+
+1. **The host speaks first**: as soon as the connection opens it sends a random nonce,
+   `{"type":"challenge","nonce":"<32 hex characters>"}`. (Never sent on the Unix socket.)
+2. The agent's `hello` carries a **proof** that it knows the agent's token:
+   `{"type":"hello","plugin":"desktop","version":"1","proto":1,"proof":"<64 hex characters>"}`.
+
+```text
+proof = hex( HMAC-SHA256( key = token bytes,
+                          msg = "it-matters-agent-v1" 0x00 nonce 0x00 plugin_id ) )
+```
+
+`token` is the first line of the token file with trailing whitespace removed, `nonce` is the challenge's text
+exactly as sent, and the result is lower-case hex. A Python agent computes it as:
+
+```python
+proof = hmac.new(token.encode(), b"it-matters-agent-v1\0" + nonce.encode() + b"\0" + plugin_id.encode(),
+                 hashlib.sha256).hexdigest()
+```
+
+(`examples/plugins/demo.py --connect ...` does exactly this.) A listener without a token (loopback only)
+ignores the proof. Every failed login is answered with `{"type":"error","message":"authentication failed"}`
+after a short delay and the connection is closed; the reply does not say whether the plugin id or the proof was
+wrong. A valid login **replaces** an existing session of the same plugin (see
+[the configuration reference](../config/plugins.md#remote-agents)). Nothing after the handshake is encrypted.
+
 ## Connection
 
 1. Connect, then send `hello` within 5 seconds:
    `{"type":"hello","plugin":"linux-system","version":"0.1.0","proto":1}`.
    `plugin` must be an id listed under `plugins` in the host's config, otherwise the host sends
-   `{"type":"error","message":...}` and closes the connection. `token` is for remote (TCP)
-   connections, which are not implemented yet (the field is accepted and ignored on the Unix socket).
+   `{"type":"error","message":...}` and closes the connection. (`proof` is only for remote connections, below.)
 2. The host answers `{"type":"welcome","proto":1}`.
 3. Only one connection per plugin id is accepted at a time. A second one is refused while the first
    is alive, so a reconnecting plugin should retry with backoff.

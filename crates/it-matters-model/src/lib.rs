@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+pub mod auth;
 pub mod protocol;
 
 use serde::{Deserialize, Serialize};

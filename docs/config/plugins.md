@@ -8,8 +8,9 @@ the file.
 
 Ready-made plugins you can list here are described in [bundled plugins](../plugins/README.md).
 
-**Status of `connect`:** remote TCP agents cannot connect yet. The entry is validated, and the daemon logs a
-warning at start-up, but nothing listens on `listen`.
+A plugin listed with `connect` is a **remote agent**: a program on another machine (for example the Linux
+plugins on your desktop) that connects to a TCP port of the bridge. Nobody starts it for the bridge, so it runs
+and restarts itself on its own machine. See [remote agents](#remote-agents) below.
 
 ## How the daemon runs a `run` plugin
 
@@ -67,9 +68,70 @@ Each plugin needs exactly one of `run` and `connect`. Plugin ids are unique, 1 t
 | `plugins[].run.command` | path | required | startup only | Executable to start; must not be empty. Looked up in `PATH` if it contains no `/`. Prefer an absolute path. |
 | `plugins[].run.args` | list of strings | `[]` | startup only | Arguments passed to `command`, one list entry per argument (no shell is involved, so no quoting or expansion). |
 | `plugins[].run.timeout_ms` | integer | `2000` | startup only | How long the plugin has to answer each write a controller makes (`set`); after that the controller gets a failure. Must be greater than 0. (The handshake timeout is a fixed 5 s.) |
-| `plugins[].connect` | map | none | startup only | A TCP listener for a remote plugin agent. **Not implemented yet** (validated only). |
-| `plugins[].connect.listen` | string | required | startup only | `host:port` to listen on, e.g. `0.0.0.0:7550`. Each listener address may be used once. **Not used yet.** |
-| `plugins[].connect.token_file` | path | none | startup only | File holding the shared secret agents must present. **Required unless `listen` is a loopback address.** Not used yet. |
+| `plugins[].connect` | map | none | startup only | A TCP listener for one remote plugin agent (see [remote agents](#remote-agents)). |
+| `plugins[].connect.listen` | string | required | startup only | `ip:port` to listen on, e.g. `192.168.1.10:7550`. A hostname is not accepted. Each address may be used once, and the daemon refuses to start if the port is taken. Prefer the address of your LAN or VPN interface to `0.0.0.0`. |
+| `plugins[].connect.token_file` | path | none | startup only | File holding the agent's token: the first line, at least 32 and at most 1024 characters. The agent proves it knows it; the token itself never crosses the network. **Required unless `listen` is a loopback address.** The daemon refuses to start if the file is missing, empty or too short, and warns if other users can read it. Use one token per agent. See [tokens](#tokens). |
 | `devices` | map | `{}` | startup only | Overrides keyed by device id (the id a plugin registered). |
 | `devices.<id>` | map | n/a | startup only | Overrides for one device. |
 | `devices.<id>.name` | string | none | startup only | Name shown in controllers instead of the plugin's own device name. For a device made of several units the unit's id is appended (`Office PC online`). Must not be empty. |
+
+## Remote agents
+
+A remote agent lets a computer other than the bridge's host report its state: the bridge can run on an
+always-on machine (a Raspberry Pi, a server) while each desktop runs the bundled
+[plugins](../plugins/README.md) as agents. This is also what makes "online" meaningful: when a desktop
+loses power or the network, its devices become **unreachable** within about 30 seconds (the bridge pings every
+10 seconds and drops an agent that is silent for 30).
+
+```yaml
+plugins:
+  - id: desktop
+    connect:
+      listen: 192.168.1.10:7550            # an address of the bridge machine; the agent connects here
+      token_file: /etc/it-matters/desktop.token
+```
+
+* **One listener per agent.** A listener serves exactly the plugin it is configured for: a connection that
+  claims any other id is refused, even with the right token. Give each agent its own `id`, port and token.
+* **Local and remote ids do not mix.** An id listed with `connect` is refused on the local Unix socket, and
+  an id listed with `run` is refused on a TCP listener.
+* **Reconnecting.** When an agent reconnects (its computer rebooted, a laptop woke up, the network blipped)
+  while the bridge still holds the old connection, the **new authenticated connection replaces the old one**
+  and the devices come back on the same endpoints. Without a token (loopback only) there is no way to tell
+  the new connection from an intruder, so a second connection is refused (`already connected`) while the first
+  lives.
+* **Connections.** At most 16 connections per listener are served at once; an agent must complete the
+  handshake within 5 seconds. Agents are plugins like any other: the bridge pings them and they answer.
+
+### Tokens
+
+Create a token and give the **same file contents** to the bridge (`token_file`) and to the agent
+(`--token-file`):
+
+```bash
+openssl rand -hex 32 > /etc/it-matters/desktop.token       # 64 hex characters
+chmod 600 /etc/it-matters/desktop.token
+# or, without openssl:
+head -c 32 /dev/urandom | xxd -p -c 64 > /etc/it-matters/desktop.token
+```
+
+Copy the file to the agent machine over a safe channel (for example `scp`). The bridge reads it once at
+start; **restart the daemon after changing it**. `it-matters check` also reads the token files, so run it
+after creating them. Token contents are never logged or shown in error messages.
+
+### What this protects, and what it does not
+
+* **Protected:** the token is never sent. The bridge sends a fresh random challenge and the agent answers with
+  an HMAC-SHA256 over it, so recording a login does not let anyone log in later, and a proof for one plugin id
+  is useless for another. Failed logins are answered identically (`authentication failed`, whether the id or
+  the token was wrong) after a short delay and are logged with the peer's address.
+* **Not protected: the connection itself.** Nothing is encrypted or integrity-protected. Anyone who can
+  intercept the traffic between the agent and the bridge (on the same Wi-Fi, for example) can **read** what
+  the agent reports and **hijack a live session** (and so impersonate that one plugin's devices). The impact
+  is limited to the devices of that plugin, but you should still use a network you trust, or run the
+  connection through a tunnel (WireGuard/netbird, or `ssh -L`) and listen on the tunnel's address. TLS is not
+  implemented.
+* **Loopback without a token.** A listener on `127.0.0.1` may omit `token_file`, but then *any program on that
+  machine* can connect as the plugin. A local Unix socket is protected by file permissions; a loopback port is
+  not. Set a token anyway.
+* **Firewall.** Open the listener's TCP port to the agent's machine only.

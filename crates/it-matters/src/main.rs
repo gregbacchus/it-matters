@@ -2,6 +2,7 @@
 
 mod config;
 mod service;
+mod tokens;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -115,6 +116,22 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     let from = source.map_or("built-in defaults".to_owned(), |p| p.display().to_string());
+    // Token files are read here too (this makes `check` touch the file system), so a bad one is found
+    // before the daemon is restarted.
+    match tokens::load(&cfg) {
+        Ok(loaded) => {
+            for w in &loaded.warnings {
+                eprintln!("it-matters: warning: {w}");
+            }
+        }
+        Err(problems) => {
+            eprintln!("it-matters: invalid configuration:");
+            for p in problems {
+                eprintln!("  - {p}");
+            }
+            return ExitCode::from(1);
+        }
+    }
     match cli.command {
         Command::Check => {
             println!("configuration OK ({from}): {} plugin(s)", cfg.plugins.len());

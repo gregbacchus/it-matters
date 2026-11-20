@@ -139,3 +139,37 @@ wpctl get-volume @DEFAULT_AUDIO_SINK@      # unchanged
 (WirePlumber remembers a volume per node name, so a test speaker of the same name starts at whatever you last
 set it to.) The automated `#[ignore]`d tests do the same safely by themselves: see
 [`plugins/linux-audio.md`](../plugins/linux-audio.md#testing).
+
+## Testing remote agents (TCP)
+
+Run the bridge with a `connect` entry and the plugin as a remote agent (here on the same machine, through the
+machine's LAN address so the non-loopback path is used; replace the address with yours):
+
+```yaml
+plugins:
+  - id: desktop
+    connect:
+      listen: 192.168.1.10:7550
+      token_file: /tmp/it-matters-e2e/desktop.token
+```
+
+```bash
+openssl rand -hex 32 > /tmp/it-matters-e2e/desktop.token && chmod 600 /tmp/it-matters-e2e/desktop.token
+it-matters --config /tmp/it-matters-e2e/config.yaml check        # also checks the token; warns the port is unencrypted
+RUST_LOG=info it-matters --config /tmp/it-matters-e2e/config.yaml run 2> /tmp/it-matters-e2e/daemon.log &
+it-matters-plugin-linux-system --device e2e-pc --name "E2E PC" --connect 192.168.1.10:7550 \
+    --plugin-id desktop --token-file /tmp/it-matters-e2e/desktop.token &
+python3 examples/plugins/demo.py --connect 192.168.1.10:7550 --plugin-id desktop --token-file /tmp/it-matters-e2e/desktop.token
+```
+
+(Run one agent per entry: a second connection for `desktop` replaces the first.) Things worth checking:
+
+* A wrong token (`--token-file` with other contents) or a wrong `--plugin-id` is refused with
+  `authentication failed`; the daemon log has a `host: authentication failed ... from <address>` warning.
+* **Power loss:** `kill -STOP <agent pid>` freezes the agent without closing its connection, like a computer
+  losing power. After about 30 seconds the devices' `Reachable` becomes `false` (the log shows nothing: the
+  bridge dropped the silent connection). `kill -CONT <agent pid>`: the agent notices its connection is gone,
+  reconnects after a second or two, and the devices are back **on the same endpoints**.
+* `kill -9 <agent pid>` (a crashed agent) is noticed at once, because the operating system closes its socket.
+* Restart the bridge: the agent logs `cannot connect`, retries with growing delays, and reconnects when the
+  bridge is back.

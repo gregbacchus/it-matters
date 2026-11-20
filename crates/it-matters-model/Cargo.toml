@@ -10,3 +10,6 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Already in the dependency graph through rs-matter: same versions, so no new crates.
+hmac = "0.13"
+sha2 = "0.11"

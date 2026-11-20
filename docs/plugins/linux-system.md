@@ -22,10 +22,13 @@ One device (`--device`, named `--name`) with two units, each a Matter **Contact 
 | `online` | `<name> online` | `<device>/online` | `true` while the plugin is running |
 | `signed-in` | `<name> signed-in` | `<device>/signed-in` | a user is signed in at the machine (below) |
 
-**`online` is always `true` while the plugin runs.** When the plugin stops (or the computer is off, for a
-remote agent) controllers do not see `false`: they see the endpoint as **unreachable** ("No Response"). It
-exists so that "this computer is up" is a sensor you can build automations on; use `Reachable` for
-"is it down". See [what controllers see](../matter.md).
+**`online` is always `true` while the plugin runs.** When the plugin stops, or the computer it runs on is
+switched off or loses its network, controllers do not see `false`: they see the endpoint as **unreachable**
+("No Response"). It exists so that "this computer is up" is a sensor you can build automations on; use
+`Reachable` for "is it down". Run as a [remote agent](README.md#running-on-another-machine-as-a-remote-agent) on
+the desktop, with the bridge on an always-on machine, it tells you when the desktop goes away: **within
+about 30 seconds** of the connection stopping (the bridge pings every 10 seconds and drops an agent that is
+silent for 30; a clean shutdown of the plugin is noticed at once). See [what controllers see](../matter.md).
 
 **`signed-in` is `true`** when logind has at least one session that is **local** (not ssh), of class
 **`user`**, of a **graphical type** (`x11`, `wayland` or `mir`) and in state **`active`** or **`online`**.
@@ -44,6 +47,7 @@ Controllers cannot write to these sensors.
 
 ```
 it-matters-plugin-linux-system [--device <id>] [--name <name>] [--poll-ms <ms>]
+    [--connect <host:port> --plugin-id <id> [--token-file <file>]]
 ```
 
 | Flag | Default | Description |
@@ -51,6 +55,9 @@ it-matters-plugin-linux-system [--device <id>] [--name <name>] [--poll-ms <ms>]
 | `--device <id>` | the host name, made into a valid id (lower case; other characters become `-`) | The device id the plugin registers: 1-64 characters of `a-z`, `0-9`, `-`, `_`. The endpoint ids are remembered by this id, so changing it makes controllers see new devices. |
 | `--name <name>` | the host name | The name shown in controllers (`devices.<id>.name` in the daemon configuration overrides it). |
 | `--poll-ms <ms>` | `5000` | How often to re-read the sessions, at least 100. |
+| `--connect <host:port>` | none | Run as a **remote agent**: connect to the bridge's TCP listener for this agent (`plugins[].connect.listen` in the bridge's configuration) instead of the local socket. Reconnects forever, with a delay that grows from 1 to 30 seconds. See [remote agents](README.md#running-on-another-machine-as-a-remote-agent). |
+| `--plugin-id <id>` | `$IT_MATTERS_PLUGIN_ID` | With `--connect`: the plugin `id` the bridge configured for this agent (required unless the environment variable is set). |
+| `--token-file <file>` | none | With `--connect`: the file holding the agent's token, the same as the bridge's `token_file`. Omit it only for a bridge listener on loopback without a token. |
 | `--help`, `-h` | | Print the usage text and exit `0`. |
 | `--version`, `-V` | | Print the version and exit `0`. |
 
@@ -65,6 +72,13 @@ plugins:
     run:
       command: /usr/local/bin/it-matters-plugin-linux-system
       args: [--device, office-pc, --name, Office PC]
+```
+
+As a remote agent on the desktop (the bridge configures a `connect` entry with `id: desktop`; see below):
+
+```bash
+it-matters-plugin-linux-system --device office-pc --name "Office PC" \
+    --connect 192.168.1.10:7550 --plugin-id desktop --token-file ~/.config/it-matters/desktop.token
 ```
 
 In the daemon's log (`RUST_LOG=info`) the plugin appears as `[linux-system]`:
