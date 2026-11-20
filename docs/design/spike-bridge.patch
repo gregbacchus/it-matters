@@ -1,0 +1,144 @@
+diff --git a/examples/src/bin/bridge.rs b/examples/src/bin/bridge.rs
+index 5ec710b..67604f3 100644
+--- a/examples/src/bin/bridge.rs
++++ b/examples/src/bin/bridge.rs
+@@ -30,7 +30,11 @@ use rs_matter::dm::clusters::app::on_off::{self, test::TestOnOffDeviceLogic, OnO
+ use rs_matter::dm::clusters::desc::{self, ClusterHandler as _};
+ use rs_matter::dm::clusters::groups::{self, ClusterHandler as _};
+ use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET};
+-use rs_matter::dm::devices::{DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_ON_OFF_LIGHT};
++use rs_matter::dm::devices::{DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_ON_OFF_LIGHT, DEV_TYPE_CONTACT_SENSOR};
++use rs_matter::dm::clusters::decl::boolean_state::{self, ClusterHandler as _};
++use rs_matter::dm::{HandlerContext, Metadata};
++use rs_matter::utils::sync::MaybeSend;
++use std::sync::{Mutex, LazyLock};
+ use rs_matter::dm::endpoints::ROOT_ENDPOINT_ID;
+ use rs_matter::dm::networks::SysNetifs;
+ use rs_matter::dm::{
+@@ -60,7 +64,7 @@ mod mdns;
+ ///
+ /// If it is not enough, the stack panics while it starts. The futures of an
+ /// unoptimized build are much bigger than those of an optimized one.
+-const BUMP_SIZE: usize = 32 * 1024;
++const BUMP_SIZE: usize = 64 * 1024;
+ 
+ /// The stack is allocated statically to avoid program stack blowups.
+ static MATTER_STACK: StaticCell<MatterStack<BUMP_SIZE, EthNetwork>> = StaticCell::new();
+@@ -182,6 +186,39 @@ const NODE: Node<'static> = Node {
+     ],
+ };
+ 
++const EP4: Endpoint<'static> = Endpoint::new(
++    4,
++    devices!(DEV_TYPE_CONTACT_SENSOR, DEV_TYPE_BRIDGED_NODE),
++    clusters!(
++        desc::DescHandler::CLUSTER,
++        BridgedHandler::CLUSTER,
++        SensorHandler::CLUSTER
++    ),
++);
++
++pub struct DynNode(Mutex<Vec<Endpoint<'static>>>);
++impl Metadata for DynNode {
++    fn access<F, R>(&self, f: F) -> R
++    where
++        F: FnOnce(&Node<'_>) -> R,
++    {
++        let g = self.0.lock().unwrap();
++        f(&Node::new(&g))
++    }
++}
++static DYN: LazyLock<DynNode> = LazyLock::new(|| DynNode(Mutex::new({ let mut v = NODE.endpoints.to_vec(); v.push(EP4); v })));
++
++pub struct SensorHandler { dataver: Dataver }
++impl boolean_state::ClusterHandler for SensorHandler {
++    const CLUSTER: Cluster<'static> = boolean_state::FULL_CLUSTER
++        .with_features(0)
++        .with_attrs(with!(required))
++        .with_cmds(with!());
++    fn dataver(&self) -> u32 { self.dataver.get() }
++    fn dataver_changed(&self) { self.dataver.changed(); }
++    fn state_value(&self, _ctx: impl ReadContext) -> Result<bool, Error> { Ok(true) }
++}
++
+ /// The Data Model handler + meta-data for our Matter Bridge.
+ fn data_model<'a, OH: OnOffHooks, LH: LevelControlHooks>(
+     matter: &'a Matter<'a>,
+@@ -190,7 +227,7 @@ fn data_model<'a, OH: OnOffHooks, LH: LevelControlHooks>(
+     on_off_ep3: &'a on_off::OnOffHandler<'a, OH, LH>,
+ ) -> impl DataModel + 'a {
+     (
+-        NODE,
++        &*DYN,
+         EmptyHandler
+             .chain(
+                 |e, _| e == ROOT_ENDPOINT_ID,
+@@ -237,7 +274,7 @@ fn data_model<'a, OH: OnOffHooks, LH: LevelControlHooks>(
+             )
+             .chain(
+                 |e, c| e == 2 && c == BridgedHandler::CLUSTER.id,
+-                Async(BridgedHandler::new(Dataver::new_rand(&mut rand)).adapt()),
++                Async(BridgedHandler { dataver: Dataver::new_rand(&mut rand), driver: true }.adapt()),
+             )
+             .chain(
+                 |e, c| e == 3 && c == desc::DescHandler::CLUSTER.id,
+@@ -254,6 +291,18 @@ fn data_model<'a, OH: OnOffHooks, LH: LevelControlHooks>(
+             .chain(
+                 |e, c| e == 3 && c == BridgedHandler::CLUSTER.id,
+                 Async(BridgedHandler::new(Dataver::new_rand(&mut rand)).adapt()),
++            )
++            .chain(
++                |e, c| e == 4 && c == desc::DescHandler::CLUSTER.id,
++                Async(desc::DescHandler::new(Dataver::new_rand(&mut rand)).adapt()),
++            )
++            .chain(
++                |e, c| e == 4 && c == BridgedHandler::CLUSTER.id,
++                Async(BridgedHandler::new(Dataver::new_rand(&mut rand)).adapt()),
++            )
++            .chain(
++                |e, c| e == 4 && c == SensorHandler::CLUSTER.id,
++                Async(boolean_state::HandlerAdaptor(SensorHandler { dataver: Dataver::new_rand(&mut rand) })),
+             ),
+     )
+ }
+@@ -261,11 +310,12 @@ fn data_model<'a, OH: OnOffHooks, LH: LevelControlHooks>(
+ #[derive(Clone, Debug)]
+ pub struct BridgedHandler {
+     dataver: Dataver,
++    driver: bool,
+ }
+ 
+ impl BridgedHandler {
+     pub const fn new(dataver: Dataver) -> Self {
+-        Self { dataver }
++        Self { dataver, driver: false }
+     }
+ 
+     pub const fn adapt(self) -> bridged_device_basic_information::HandlerAdaptor<Self> {
+@@ -287,6 +337,26 @@ impl bridged_device_basic_information::ClusterHandler for BridgedHandler {
+         self.dataver.changed();
+     }
+ 
++    fn run(&self, ctx: impl HandlerContext) -> impl core::future::Future<Output = Result<(), Error>> + MaybeSend {
++        async move {
++            if self.driver {
++                loop {
++                    embassy_time::Timer::after(embassy_time::Duration::from_secs(25)).await;
++                    { let mut g = DYN.0.lock().unwrap(); if !g.iter().any(|e| e.id == 4) { g.push(EP4); } }
++                    log::warn!("SPIKE: endpoint 4 ADDED");
++                    ctx.notify_endpoint_changed(1);
++                    ctx.notify_endpoint_changed(4);
++                    embassy_time::Timer::after(embassy_time::Duration::from_secs(25)).await;
++                    DYN.0.lock().unwrap().retain(|e| e.id != 4);
++                    log::warn!("SPIKE: endpoint 4 REMOVED");
++                    ctx.notify_endpoint_changed(1);
++                }
++            } else {
++                core::future::pending::<Result<(), Error>>().await
++            }
++        }
++    }
++
+     fn reachable(&self, _ctx: impl ReadContext) -> Result<bool, Error> {
+         // This is the only mandatory attribute.
+         //
