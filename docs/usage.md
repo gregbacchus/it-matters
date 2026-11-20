@@ -85,7 +85,7 @@ changing it**.
 
 Status: works.
 
-Every option is optional. The smallest useful file names the bridge and allows one plugin to connect:
+Every option is optional. The smallest useful file names the bridge and has the daemon run one plugin:
 
 ```yaml
 bridge:
@@ -96,8 +96,10 @@ plugins:
       command: /usr/local/bin/my-plugin
 ```
 
-(`command` is required by the validation but the daemon does not start plugins yet, see
-[plugins](config/plugins.md): start your plugin yourself and it connects with the id `demo`.)
+The daemon starts `/usr/local/bin/my-plugin` (and restarts it if it exits, see
+[plugins](config/plugins.md#how-the-daemon-runs-a-run-plugin)); the plugin finds the socket and its id in
+the environment variables `IT_MATTERS_SOCKET` and `IT_MATTERS_PLUGIN_ID`. To run a plugin yourself instead,
+see *Writing a plugin* below.
 
 Renaming a device that a plugin registered (the key is the plugin's device id):
 
@@ -127,8 +129,8 @@ A complete file that sets every option is [`examples/config.yaml`](../examples/c
 
 ## Running the bridge
 
-Status: works in the foreground. Not packaged: there is no installer, no systemd unit shipped, and the
-daemon does not start plugins.
+Status: works in the foreground, and starts and supervises the plugins listed with `run`. Not packaged:
+there is no installer and no systemd unit shipped.
 
 ```bash
 sudo mkdir -p /var/lib/it-matters /run/it-matters && sudo chown $USER /var/lib/it-matters /run/it-matters
@@ -136,8 +138,10 @@ RUST_LOG=info it-matters --config ./config.yaml run
 ```
 
 On start the daemon creates its state directory (`matter.storage_dir`), binds the plugin socket
-(`ipc.socket`, mode `0660`), starts the Matter stack and logs `plugins connect to <socket>`. If it is not
-yet commissioned it also logs the pairing codes. `Ctrl-C` or `kill -TERM` stops it cleanly.
+(`ipc.socket`, mode `0660`), starts the Matter stack and logs `plugins connect to <socket>`, then starts
+each plugin listed with `run` and logs `[id] started (pid N)` followed by the plugin's own output. If the
+bridge is not yet commissioned it also logs the pairing codes. `Ctrl-C` or `kill -TERM` stops it cleanly:
+each plugin gets SIGTERM, then SIGKILL after 5 seconds.
 
 An example systemd unit (**an untested sketch, not shipped**; adjust paths and the user):
 
@@ -184,7 +188,7 @@ A step-by-step procedure with the matter.js controller is in [`testing/e2e.md`](
 
 ## Writing a plugin
 
-Status: works. Plugins connect to the Unix socket; the daemon does not start them for you yet.
+Status: works. The daemon starts plugins listed with `run`; you can also start one yourself.
 
 A plugin is any program that connects to the Unix socket (`ipc.socket`, default
 `/run/it-matters/plugins.sock`) and exchanges one JSON object per line. Its `plugin` id in `hello` must
@@ -208,6 +212,20 @@ A complete, runnable example in Python (standard library only) is
 [`examples/plugins/demo.py`](../examples/plugins/demo.py): it registers a speaker and two sensors, answers
 controller writes and heartbeats, and flips a "microphone" sensor every 20 seconds.
 
+To have the daemon run it, list it in the configuration (it reads the socket and its id from the
+environment variables the daemon sets, so no arguments are needed):
+
+```yaml
+plugins:
+  - id: demo
+    run:
+      command: python3
+      args: [/path/to/it-matters/examples/plugins/demo.py]
+```
+
+Or start it yourself with the socket path and a plugin id that is listed under `plugins` (any `run` entry
+works as the listing, but then do not also let the daemon start that id):
+
 ```bash
 python3 examples/plugins/demo.py /run/it-matters/plugins.sock demo     # socket path, then plugin id
 ```
@@ -226,9 +244,14 @@ The full message reference, the device mapping rules and the liveness rules are 
   delete it. Choose another path.
 * `Permission denied` on the socket or state directory: the daemon's user needs write access to
   `ipc.socket`'s directory and to `matter.storage_dir`.
+* `[id] cannot start: No such file or directory` in the log: `run.command` is wrong or not executable (the
+  daemon keeps retrying with growing delays; fix the path and restart the daemon).
+* `[id] exited (...)` / `restarting in ...` over and over: the plugin crashes or exits immediately; read the
+  `[id]` lines above it (the plugin's own output). The restart delay grows to 60 s.
 * A plugin gets `plugin "x" is not configured`: add `x` under `plugins` in the configuration and restart.
-* A plugin gets `plugin "x" is already connected`: only one connection per plugin id is accepted; a dead
-  connection is dropped when the plugin process exits or after 30 seconds of silence.
+* A plugin gets `plugin "x" is already connected`: only one connection per plugin id is accepted (do not
+  run a plugin by hand while the daemon also runs it); a dead connection is dropped when the plugin process
+  exits or after 30 seconds of silence.
 * Devices are shown as "not responding" in the controller: the plugin is not connected (`Reachable` is
   false). Check that it is running and using the right socket path and plugin id.
 * The controller cannot find the bridge: check avahi, that UDP 5540 is not blocked, and that the

@@ -12,7 +12,9 @@ it-matters-model = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-channel = { workspace = true }
-tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "sync", "macros", "process"] }
+libc = "0.2"
+log = "0.4"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "test-util", "io-util", "time", "net", "sync"] }
+tokio = { workspace = true, features = ["rt", "macros", "test-util", "io-util", "time", "net", "sync", "process"] }

@@ -11,6 +11,7 @@ use it_matters_core::allocator::{Allocator, FileStore};
 use it_matters_core::frontend;
 use it_matters_core::host::{HostSettings, PluginSettings, bind_unix, serve_unix, spawn_host};
 use it_matters_core::registry::Registry;
+use it_matters_core::supervisor::{self, PluginProcess};
 use it_matters_matter::Settings;
 
 use crate::config::{Config, DEFAULT_PLUGIN_TIMEOUT_MS};
@@ -26,6 +27,29 @@ pub fn host_settings(cfg: &Config) -> HostSettings {
         })
         .collect();
     HostSettings::new(plugins)
+}
+
+/// The processes to supervise: one per plugin that has `run`. Each gets the plugin socket and its own id
+/// in its environment (`IT_MATTERS_SOCKET`, `IT_MATTERS_PLUGIN_ID`) so it needs no hard-coded paths.
+pub fn plugin_processes(cfg: &Config) -> Vec<PluginProcess> {
+    // A relative socket path is relative to the daemon's working directory; plugins start there too,
+    // but an absolute path is unambiguous if a plugin changes directory.
+    let socket = std::path::absolute(&cfg.ipc.socket).unwrap_or_else(|_| cfg.ipc.socket.clone());
+    cfg.plugins
+        .iter()
+        .filter_map(|p| {
+            let run = p.run.as_ref()?;
+            Some(PluginProcess {
+                id: p.id.clone(),
+                command: run.command.clone(),
+                args: run.args.clone(),
+                env: vec![
+                    ("IT_MATTERS_SOCKET".to_owned(), socket.to_string_lossy().into_owned()),
+                    ("IT_MATTERS_PLUGIN_ID".to_owned(), p.id.clone()),
+                ],
+            })
+        })
+        .collect()
 }
 
 /// The Matter stack's settings from the configuration.
@@ -69,13 +93,11 @@ async fn serve(cfg: Config) -> Result<(), String> {
     log::info!("plugins connect to {}", cfg.ipc.socket.display());
     tokio::spawn(serve_unix(listener, host));
 
-    for p in &cfg.plugins {
-        if p.connect.is_some() {
-            log::warn!("plugin {:?}: `connect` (remote TCP agents) is not implemented yet; it cannot connect", p.id);
-        } else {
-            log::info!("plugin {:?}: waiting for it to connect (the daemon does not start plugins yet)", p.id);
-        }
+    for p in cfg.plugins.iter().filter(|p| p.connect.is_some()) {
+        log::warn!("plugin {:?}: `connect` (remote TCP agents) is not implemented yet; it cannot connect", p.id);
     }
+    // Started only now that the socket exists, so a plugin can connect at once.
+    let plugins = supervisor::spawn(plugin_processes(&cfg), supervisor::Settings::default(), supervisor::log_sink());
 
     let result = tokio::select! {
         r = &mut done_rx => Err(r.unwrap_or_else(|_| Err("the Matter thread ended unexpectedly".into())).err().unwrap_or_else(|| "the Matter stack stopped".into())),
@@ -84,6 +106,8 @@ async fn serve(cfg: Config) -> Result<(), String> {
             Ok(())
         }
     };
+    // Whichever way we got here, stop the plugins (SIGTERM, then SIGKILL) before anything else goes away.
+    plugins.shutdown().await;
     // Leave no stale socket behind (a stale one is also replaced on the next start).
     let _ = std::fs::remove_file(&cfg.ipc.socket);
     result
@@ -111,6 +135,31 @@ mod tests {
         assert_eq!(s.plugins["a"].set_timeout, Duration::from_millis(500));
         assert_eq!(s.plugins["b"].set_timeout, Duration::from_millis(DEFAULT_PLUGIN_TIMEOUT_MS));
         assert_eq!(s.plugins.len(), 2);
+    }
+
+    #[test]
+    fn only_run_plugins_are_started_and_they_learn_the_socket_and_their_id() {
+        let cfg = Config::from_yaml(
+            "ipc: { socket: /run/x/plugins.sock }\nplugins:\n  - { id: a, run: { command: /bin/a, args: [--fast, x y] } }\n  - { id: b, connect: { listen: '127.0.0.1:1' } }\n  - { id: c, run: { command: c } }\n",
+        )
+        .unwrap();
+        let p = plugin_processes(&cfg);
+        assert_eq!(p.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+        assert_eq!(
+            (p[0].command.as_str(), p[0].args.as_slice()),
+            ("/bin/a", ["--fast".to_owned(), "x y".to_owned()].as_slice())
+        );
+        assert!(p[0].env.contains(&("IT_MATTERS_SOCKET".into(), "/run/x/plugins.sock".into())));
+        assert!(p[0].env.contains(&("IT_MATTERS_PLUGIN_ID".into(), "a".into())));
+        assert!(p[1].env.contains(&("IT_MATTERS_PLUGIN_ID".into(), "c".into())));
+    }
+
+    #[test]
+    fn a_relative_socket_path_is_made_absolute_for_plugins() {
+        let cfg =
+            Config::from_yaml("ipc: { socket: run/p.sock }\nplugins: [{ id: a, run: { command: x } }]\n").unwrap();
+        let socket = &plugin_processes(&cfg)[0].env[0].1;
+        assert!(socket.starts_with('/') && socket.ends_with("run/p.sock"), "{socket}");
     }
 
     #[test]

@@ -12,10 +12,10 @@ proven about rs-matter and why the design looks as it does). It is a young proje
 
 ## Status
 
-Done: Phase 0 (spike), Phase 1 (workspace, config), Phase 2 (plugin host) and Phase 3 (the rs-matter
-frontend, wired into `it-matters run`; verified end to end with the matter.js controller, see
-`docs/testing/e2e.md`). Not built yet: the plugin supervisor (the daemon does not start `run` plugins),
-the TCP + token listener for remote plugins, config reload, the plugin SDK, the Linux plugins,
+Done: Phase 0 (spike), Phase 1 (workspace, config), Phase 2 (plugin host), Phase 3 (the rs-matter
+frontend, wired into `it-matters run`) and the plugin supervisor (the daemon starts, restarts and stops
+`run` plugins); verified end to end with the matter.js controller, see `docs/testing/e2e.md`. Not built
+yet: the TCP + token listener for remote plugins, config reload, the plugin SDK, the Linux plugins,
 packaging (systemd units, installer), and verification with Home Assistant / Apple Home / Google Home.
 
 ## ⚠️ Rule: exhaustive documentation, kept current (configuration AND usage)
@@ -98,7 +98,7 @@ Build output must not go to `/tmp` on the author's machine (a small tmpfs); use
 | Path | What lives there |
 |---|---|
 | `crates/it-matters-model` | Matter-agnostic device/capability model and plugin wire types (`DeviceSpec`, `CapabilityKind`, `Value`), validation. No IO, no Matter. |
-| `crates/it-matters-core` | The host: `mapping.rs` (device -> Matter units, level scaling, mute polarity), `allocator.rs` (persisted endpoint ids), `registry.rs` (pure lifecycle state machine returning `FrontendEvent`s), `frontend.rs` (channel boundary + `FakeFrontend`), `host.rs` (actor + session tasks, Unix socket). Tests in `tests/host.rs` use in-memory pipes and virtual time. |
+| `crates/it-matters-core` | The host: `supervisor.rs` (starts/restarts/stops `run` plugins: process groups, backoff, output capture), `mapping.rs` (device -> Matter units, level scaling, mute polarity), `allocator.rs` (persisted endpoint ids), `registry.rs` (pure lifecycle state machine returning `FrontendEvent`s), `frontend.rs` (channel boundary + `FakeFrontend`), `host.rs` (actor + session tasks, Unix socket). Tests in `tests/host.rs` use in-memory pipes and virtual time. |
 | `crates/it-matters-matter` | The Matter frontend on rs-matter (pinned git rev): `state.rs` (pure endpoint table, unit-tested), `commissioning.rs` (random persisted passcode), `shared.rs` (table + dynamic node metadata + controller-write channel), `node.rs` (endpoint definitions), `handlers.rs` (one async cluster handler per cluster type, serving every endpoint; the event pump lives in `BridgedInfoH::run`), `run.rs` (stack, mDNS via avahi, data model chain). |
 | `crates/it-matters` | The daemon binary: CLI (`run`, `check`), `config.rs` (all config types, validation, config + docs tests), `service.rs` (`run`: starts the Matter thread and the tokio host). |
 | `docs/config/` | Configuration documentation (see the rule above). `docs/design/` holds design notes and the rs-matter spike. |
@@ -120,6 +120,11 @@ Planned crates (see the plan): `it-matters-matter` (the real frontend on rs-matt
 - **Plugins only run if listed in the main config**: a plugin cannot choose its own executable, and
   nothing read from a per-user or per-directory file may run commands.
 - **Remote (non-loopback) plugin listeners require a token file**; this is enforced in config validation.
+- **Supervisor tests use real processes and real time** (`/bin/sh` scripts, millisecond settings): paused
+  tokio time would let backoffs and grace periods "elapse" while a child is still running. Mutation-check
+  changes to it (group kill, SIGKILL escalation, post-exit cleanup, the line cap) as was done originally.
+  PR_SET_PDEATHSIG fires when the *thread* that spawned the child exits, which is only safe because the
+  daemon runs the supervisor on the main thread of a current-thread runtime: keep it that way.
 - **Host design:** one actor task owns the registry, so changes and their frontend events are totally
   ordered; sessions are generic over the stream. The frontend boundary is channels (`async-channel`),
   not async trait calls, because rs-matter will drain it from its own executor. Event channels are

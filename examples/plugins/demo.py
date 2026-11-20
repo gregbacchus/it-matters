@@ -9,20 +9,22 @@ It registers two devices and keeps them moving so you can watch them in a Matter
 Usage:
     python3 examples/plugins/demo.py [socket] [plugin-id]
 
-`socket` is the daemon's `ipc.socket` (default /run/it-matters/plugins.sock) and `plugin-id` must be
-listed under `plugins` in the daemon's configuration (default "demo"). Stop it with Ctrl-C: the
-devices then show as unreachable in the controller until it is started again.
+`socket` is the daemon's `ipc.socket` and `plugin-id` must be listed under `plugins` in the daemon's
+configuration. Each defaults to the environment variable the daemon sets when it starts a plugin itself
+(`IT_MATTERS_SOCKET`, `IT_MATTERS_PLUGIN_ID`), and then to /run/it-matters/plugins.sock and "demo".
+Stop it with Ctrl-C: the devices then show as unreachable in the controller until it runs again.
 
 The protocol is documented in docs/design/plugin-protocol.md.
 """
 import json
+import os
 import select
 import socket
 import sys
 import time
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/run/it-matters/plugins.sock"
-PLUGIN_ID = sys.argv[2] if len(sys.argv) > 2 else "demo"
+SOCKET = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("IT_MATTERS_SOCKET")) or "/run/it-matters/plugins.sock"
+PLUGIN_ID = (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("IT_MATTERS_PLUGIN_ID")) or "demo"
 MIC_FLIP_SECONDS = 20
 
 sys.stdout.reconfigure(line_buffering=True)  # show output at once, even when piped

@@ -16,13 +16,14 @@ ipc:
   socket: /run/it-matters/plugins.sock   # where local plugins connect
 
 plugins:
-  # A local plugin. Today the daemon only lets a plugin with this id connect to the socket above and
-  # applies timeout_ms; it does not start `command` itself yet (start the plugin yourself).
+  # A local plugin the daemon starts and supervises (restarting it if it exits). It finds the socket and
+  # its id in $IT_MATTERS_SOCKET and $IT_MATTERS_PLUGIN_ID. If the command does not exist the daemon logs
+  # `cannot start` and keeps retrying, so point it at a real plugin.
   - id: linux-system
     run:
       command: /usr/lib/it-matters/plugin-linux-system
       args: []
-      timeout_ms: 2000
+      timeout_ms: 2000        # how long the plugin has to answer a controller's write
   # A remote agent (e.g. a desktop) that connects over TCP. Non-loopback needs a token file.
   # NOT IMPLEMENTED YET: validated, but nothing listens (the daemon logs a warning at start).
   - id: desktop-agent

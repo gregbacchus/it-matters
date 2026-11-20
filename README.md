@@ -13,8 +13,9 @@ machine and desktop agents connecting to it.
 > **Status: early but working.** The bridge runs: plugins connect over a Unix socket, their devices appear
 > in Matter as Contact/Occupancy sensors, On/Off plugs and Speakers, controller writes reach the plugin, and
 > devices appear, disappear and go unreachable live. Verified with the matter.js controller on Linux; **not yet
-> verified with Home Assistant, Apple Home or Google Home**. Not built yet: the daemon starting plugins for you,
-> remote (TCP) plugin agents, the Linux desktop plugins and packaging. See [`docs/usage.md`](docs/usage.md).
+> verified with Home Assistant, Apple Home or Google Home**. The daemon starts, restarts and stops the plugins
+> you list. Not built yet: remote (TCP) plugin agents, the Linux desktop plugins and packaging. See
+> [`docs/usage.md`](docs/usage.md).
 
 ## Try it
 

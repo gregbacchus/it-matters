@@ -1,19 +1,43 @@
 # Plugins and devices
 
-Plugins are separate processes. Locally running plugins connect to the Unix socket in `ipc.socket`;
-a plugin listed with `run` is meant to be started and supervised by the daemon, one listed with
-`connect` is a remote agent that connects over TCP. **A plugin only connects if its id is listed
-here** (anything else is refused with `plugin ... is not configured`): a plugin cannot choose its own
-executable or claim an id that is not in the file.
+Plugins are separate processes. Locally running plugins connect to the Unix socket in `ipc.socket`; a plugin
+listed with `run` is **started and supervised by the daemon**, one listed with `connect` is a remote agent
+that connects over TCP. **A plugin only connects if its id is listed here** (anything else is refused with
+`plugin ... is not configured`): a plugin cannot choose its own executable or claim an id that is not in
+the file.
 
-**Status of `run` and `connect` (read this):**
+**Status of `connect`:** remote TCP agents cannot connect yet. The entry is validated, and the daemon logs a
+warning at start-up, but nothing listens on `listen`.
 
-* `run`: **the daemon does not start plugins yet.** Today a `run` entry only *allows* a plugin with that
-  `id` to connect to `ipc.socket` and sets its `timeout_ms`; `command` and `args` are validated but not
-  used. Start the plugin yourself (a shell, a systemd unit, ...). Supervision (starting, restarting with
-  backoff, killing the process group) is not implemented.
-* `connect`: **remote TCP agents cannot connect yet.** The entry is validated, and the daemon logs a
-  warning at start-up, but nothing listens on `listen`.
+## How the daemon runs a `run` plugin
+
+* **Start.** After the plugin socket is bound the daemon starts every `run` plugin, each as
+  `command args...`. `command` is looked up in `PATH` if it has no `/`; a relative path is relative to the
+  daemon's working directory (which is `/` under systemd), so **prefer absolute paths**.
+* **User and environment.** The plugin runs as the daemon's user and inherits the daemon's environment,
+  plus two variables: `IT_MATTERS_SOCKET` (the absolute path of `ipc.socket`) and `IT_MATTERS_PLUGIN_ID`
+  (the plugin's `id`). A plugin can read these instead of hard-coding either. Standard input is closed.
+* **Process group.** Each plugin gets its own process group, so the daemon can stop everything the plugin
+  started.
+* **Output.** Standard output is logged at `info` and standard error at `warn`, one log line per output
+  line, prefixed `[id]`, with log target `plugin` (for example `RUST_LOG=plugin=debug`). Lines longer than
+  8 KiB are cut and end with ` [line cut]`.
+* **Restarts.** A plugin that exits **for any reason, including a clean exit with status 0**, is started
+  again after a delay: 1 s, then doubling (2, 4, 8, ...) up to 60 s. A run that lasted at least 30 s resets
+  the delay to 1 s. A command that cannot be started (not found, not executable) is retried the same way
+  and logs `cannot start: ...`; it does not stop the daemon. These timings are fixed, not configurable.
+  Whenever a plugin exits, everything left in its process group is killed (SIGKILL), so a crashed plugin
+  cannot leave helpers running beside its replacement.
+* **Reachability.** While a plugin is down its devices are `Reachable = false`; when the restarted plugin
+  registers again they return on the **same endpoints** with their last known values.
+* **Shutdown.** On `SIGINT`/`SIGTERM` the daemon sends SIGTERM to each plugin's process group, waits up to
+  5 s, then sends SIGKILL, before removing the socket and exiting.
+* **If the daemon is killed** (`kill -9`, a crash, the OOM killer) it cannot clean up, but the kernel sends
+  SIGTERM to each plugin's *main* process, so plugins are not left orphaned. Helper processes a plugin
+  started itself are not signalled in that case. The stale socket is replaced on the next start.
+* **Plugins started by hand.** A plugin you start yourself can connect with a listed `id` too, but only one
+  connection per id is accepted: if a hand-started copy holds the id, the supervised copy is refused
+  (`already connected`), exits, and is restarted with growing delays. Run each id one way only.
 
 ```yaml
 ipc:
@@ -37,10 +61,10 @@ Each plugin needs exactly one of `run` and `connect`. Plugin ids are unique, 1 t
 | `plugins` | list | `[]` | startup only | The plugins to host. |
 | `plugins[]` | map | n/a | startup only | One plugin. |
 | `plugins[].id` | string | required | startup only | Unique plugin id. |
-| `plugins[].run` | map | none | startup only | A local plugin. Its `timeout_ms` applies today; the daemon will start `command` itself once supervision exists (not yet). |
-| `plugins[].run.command` | path | required | startup only | Executable to start. Must not be empty. **Not used yet** (the daemon does not start plugins). |
-| `plugins[].run.args` | list of strings | `[]` | startup only | Arguments for `command`. **Not used yet.** |
-| `plugins[].run.timeout_ms` | integer | `2000` | startup only | Hard timeout for the plugin's handshake and for each write it is asked to perform. Must be greater than 0. |
+| `plugins[].run` | map | none | startup only | A local plugin that the daemon starts and supervises (see above). |
+| `plugins[].run.command` | path | required | startup only | Executable to start; must not be empty. Looked up in `PATH` if it contains no `/`. Prefer an absolute path. |
+| `plugins[].run.args` | list of strings | `[]` | startup only | Arguments passed to `command`, one list entry per argument (no shell is involved, so no quoting or expansion). |
+| `plugins[].run.timeout_ms` | integer | `2000` | startup only | How long the plugin has to answer each write a controller makes (`set`); after that the controller gets a failure. Must be greater than 0. (The handshake timeout is a fixed 5 s.) |
 | `plugins[].connect` | map | none | startup only | A TCP listener for a remote plugin agent. **Not implemented yet** (validated only). |
 | `plugins[].connect.listen` | string | required | startup only | `host:port` to listen on, e.g. `0.0.0.0:7550`. Each listener address may be used once. **Not used yet.** |
 | `plugins[].connect.token_file` | path | none | startup only | File holding the shared secret agents must present. **Required unless `listen` is a loopback address.** Not used yet. |

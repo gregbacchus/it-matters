@@ -7,3 +7,4 @@ pub mod frontend;
 pub mod host;
 pub mod mapping;
 pub mod registry;
+pub mod supervisor;

@@ -19,7 +19,8 @@ ipc:
 plugins:
   - id: demo
     run:
-      command: /bin/true                     # not used yet: the daemon does not start plugins
+      command: python3                       # the daemon starts the demo plugin itself
+      args: [/path/to/it-matters/examples/plugins/demo.py]
 devices:
   desktop-audio:
     name: Office PC Audio
@@ -30,12 +31,12 @@ mkdir -p /tmp/it-matters-e2e
 it-matters --config /tmp/it-matters-e2e/config.yaml check
 ```
 
-## 2. Start the daemon and the demo plugin
+## 2. Start the daemon (it starts the demo plugin)
 
 ```bash
 RUST_LOG=info it-matters --config /tmp/it-matters-e2e/config.yaml run 2> /tmp/it-matters-e2e/daemon.log &
 grep -E "PairingCode|SetupQRCode" /tmp/it-matters-e2e/daemon.log     # the manual pairing code, e.g. 2499-520-8318
-python3 examples/plugins/demo.py /tmp/it-matters-e2e/run/plugins.sock demo &
+grep "\[demo\]" /tmp/it-matters-e2e/daemon.log                      # started (pid N), connected ..., the plugin's output
 ```
 
 ## 3. Commission and read with the matter.js shell
@@ -67,10 +68,16 @@ again; read the Aggregator's parts list (endpoint 1) to see topology changes.
 
 ## 4. Things worth checking
 
-* Stop the plugin: `Reachable` becomes `false` on endpoints 2 to 4 and `commands onoff off 11 2` fails.
-  Start it again: `Reachable` is `true` and the endpoint ids are unchanged.
-* Start the plugin *after* commissioning: the parts list changes from `[]` to `[2,3,4]`.
-* Stop the daemon with `kill -TERM`: it logs `shutting down`, exits and removes the socket.
+* `kill -9` the plugin (its pid is in the `started (pid N)` log line): `Reachable` becomes `false` on
+  endpoints 2 to 4 and `commands onoff off 11 2` fails; about a second later the daemon restarts the plugin
+  (`exited (signal: 9 (SIGKILL))`, `restarting in 1.0s`, `started`), `Reachable` is `true` again and the
+  endpoint ids are unchanged.
+* Commission *before* the plugin connects (for example with `plugins: []`, then add the plugin and restart
+  the daemon): the parts list changes from `[]` to `[2,3,4]`.
+* `kill -9` the daemon: the plugin is not left running (the kernel sends it SIGTERM); the stale socket is
+  replaced on the next start.
+* Stop the daemon with `kill -TERM`: it logs `shutting down` and `[demo] stopped`, the plugin is gone, and the
+  socket is removed.
 
 ## Notes
 

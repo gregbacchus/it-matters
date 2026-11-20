@@ -4,6 +4,14 @@ Plugins are separate processes. They connect to the host's Unix socket (`ipc.soc
 **one JSON object per line** in each direction, UTF-8, `\n`-terminated, at most 65536 bytes per line.
 Every object has a `"type"`. The types are defined in `crates/it-matters-model/src/protocol.rs`.
 
+## Starting a plugin
+
+Plugins listed with `run` in the daemon's configuration are started by the daemon, which sets
+`IT_MATTERS_SOCKET` (the socket path) and `IT_MATTERS_PLUGIN_ID` (the plugin's id) in their environment, so
+a plugin can use them instead of hard-coded values. A plugin that exits is restarted with a growing delay,
+so a plugin should simply reconnect from scratch (`hello`, then `register` and `update` everything again)
+every time it starts. See [the configuration reference](../config/plugins.md#how-the-daemon-runs-a-run-plugin).
+
 ## Connection
 
 1. Connect, then send `hello` within 5 seconds:

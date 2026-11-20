@@ -1173,6 +1173,8 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "it-matters-model",
+ "libc",
+ "log",
  "serde",
  "serde_json",
  "tokio",
