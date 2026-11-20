@@ -1,0 +1,12 @@
+[package]
+name = "it-matters-model"
+description = "Matter-agnostic device and capability model, and the plugin wire types, for it-matters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

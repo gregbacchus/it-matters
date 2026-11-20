@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/it-matters-model", "crates/it-matters-core", "crates/it-matters"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/gregbacchus/it-matters"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+async-channel = "2"
+tokio = { version = "1", default-features = false }
+it-matters-model = { path = "crates/it-matters-model" }
+it-matters-core = { path = "crates/it-matters-core" }
+
+[profile.release]
+lto = "thin"
+strip = true

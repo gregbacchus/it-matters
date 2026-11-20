@@ -1,0 +1,13 @@
+[package]
+name = "it-matters"
+description = "A lightweight Matter bridge daemon that hosts plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+it-matters-model = { workspace = true }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
