@@ -4,7 +4,7 @@
   python3 scripts/update-third-party-notices.py          # (re)write THIRD-PARTY-NOTICES.md
   python3 scripts/update-third-party-notices.py --check  # exit 1 if the file is out of date
 
-Covers every Rust crate the `it-matters` daemon is built from (the normal dependency graph for
+Covers every Rust crate the `it-matters` daemon and the bundled plugin binaries are built from (the normal dependency graph for
 Linux; dev and build-script-only crates are not linked into the binary), with its licence text.
 Run it again whenever dependencies change (Cargo.toml / Cargo.lock). The output is deterministic.
 """
@@ -18,7 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "THIRD-PARTY-NOTICES.md"
 TARGET = "x86_64-unknown-linux-gnu"
-DAEMON = "it-matters"
+# Every binary the project ships: the daemon and the bundled plugins.
+BINARIES = ["it-matters", "it-matters-plugin-linux-system", "it-matters-plugin-linux-audio"]
 LICENSE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "UNLICENSE", "NOTICE", "COPYRIGHT")
 
 
@@ -55,8 +56,10 @@ def runtime_crates():
     )
     packages = {p["id"]: p for p in meta["packages"]}
     nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
-    root = next(p["id"] for p in meta["packages"] if p["name"] == DAEMON)
-    seen, stack = set(), [root]
+    roots = [p["id"] for p in meta["packages"] if p["name"] in BINARIES]
+    if len(roots) != len(BINARIES):
+        fail(f"expected packages {BINARIES} in the workspace")
+    seen, stack = set(), list(roots)
     while stack:
         pid = stack.pop()
         if pid in seen:
@@ -66,7 +69,7 @@ def runtime_crates():
             # kind None = a normal dependency (linked in); "build" / "dev" are not shipped.
             if any(k["kind"] is None for k in dep["dep_kinds"]):
                 stack.append(dep["pkg"])
-    seen.discard(root)
+    seen -= set(roots)
     # Our own workspace crates (path dependencies) are not third-party.
     seen = {p for p in seen if packages[p].get("source")}
     return sorted((packages[p] for p in seen), key=lambda p: (p["name"], p["version"]))
@@ -99,7 +102,7 @@ def crate_entries(crates):
 
 HEADER = """# Third-party notices
 
-it-matters itself is MIT licensed (see [LICENSE](LICENSE)). The it-matters binary contains the
+it-matters itself is MIT licensed (see [LICENSE](LICENSE)). The it-matters binaries contain the
 following third-party software, whose licences are reproduced below as they require.
 
 This file is generated: run `python3 scripts/update-third-party-notices.py` after changing
@@ -114,7 +117,7 @@ def render():
 
     out = [HEADER]
     out.append("## Rust crates\n")
-    out.append(f"{len(crates)} crates are compiled into the binary. Crates sharing a licence text are listed together.\n")
+    out.append(f"{len(crates)} crates are compiled into the binaries. Crates sharing a licence text are listed together.\n")
     ordered = sorted(groups.values(), key=lambda g: (sorted(g["spdx"]), g["crates"][0][0], g["crates"][0][1]))
     for n, g in enumerate(ordered, 1):
         spdx = " / ".join(sorted(g["spdx"]))

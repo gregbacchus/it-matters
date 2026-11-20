@@ -1206,6 +1206,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "it-matters-plugin-linux-audio"
+version = "0.1.0"
+dependencies = [
+ "it-matters-core",
+ "it-matters-model",
+ "it-matters-plugin-sdk",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "it-matters-plugin-linux-system"
+version = "0.1.0"
+dependencies = [
+ "futures-lite",
+ "it-matters-core",
+ "it-matters-model",
+ "it-matters-plugin-sdk",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "it-matters-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "it-matters-core",
+ "it-matters-model",
+ "tokio",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"

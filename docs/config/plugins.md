@@ -6,6 +6,8 @@ that connects over TCP. **A plugin only connects if its id is listed here** (any
 `plugin ... is not configured`): a plugin cannot choose its own executable or claim an id that is not in
 the file.
 
+Ready-made plugins you can list here are described in [bundled plugins](../plugins/README.md).
+
 **Status of `connect`:** remote TCP agents cannot connect yet. The entry is validated, and the daemon logs a
 warning at start-up, but nothing listens on `listen`.
 

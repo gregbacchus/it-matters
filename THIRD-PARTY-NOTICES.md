@@ -1,6 +1,6 @@
 # Third-party notices
 
-it-matters itself is MIT licensed (see [LICENSE](LICENSE)). The it-matters binary contains the
+it-matters itself is MIT licensed (see [LICENSE](LICENSE)). The it-matters binaries contain the
 following third-party software, whose licences are reproduced below as they require.
 
 This file is generated: run `python3 scripts/update-third-party-notices.py` after changing
@@ -9,7 +9,7 @@ dependencies (Cargo.toml / Cargo.lock) and commit the result.
 
 ## Rust crates
 
-223 crates are compiled into the binary. Crates sharing a licence text are listed together.
+223 crates are compiled into the binaries. Crates sharing a licence text are listed together.
 
 ### Licence text 1: (MIT OR Apache-2.0) AND Unicode-3.0
 

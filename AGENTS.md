@@ -12,11 +12,12 @@ proven about rs-matter and why the design looks as it does). It is a young proje
 
 ## Status
 
-Done: Phase 0 (spike), Phase 1 (workspace, config), Phase 2 (plugin host), Phase 3 (the rs-matter
-frontend, wired into `it-matters run`) and the plugin supervisor (the daemon starts, restarts and stops
-`run` plugins); verified end to end with the matter.js controller, see `docs/testing/e2e.md`. Not built
-yet: the TCP + token listener for remote plugins, config reload, the plugin SDK, the Linux plugins,
-packaging (systemd units, installer), and verification with Home Assistant / Apple Home / Google Home.
+Done: the rs-matter spike, the workspace and config, the plugin host, the rs-matter frontend wired into
+`it-matters run`, the plugin supervisor (the daemon starts, restarts and stops `run` plugins), the Rust plugin
+SDK, and the two bundled Linux plugins (`it-matters-plugin-linux-system`, `it-matters-plugin-linux-audio`).
+Verified end to end with the matter.js controller, see `docs/testing/e2e.md`. Not built yet: the TCP + token
+listener for remote plugins, config reload, packaging (systemd units, installer), and verification with Home
+Assistant / Apple Home / Google Home.
 
 ## ⚠️ Rule: exhaustive documentation, kept current (configuration AND usage)
 
@@ -103,6 +104,9 @@ Build output must not go to `/tmp` on the author's machine (a small tmpfs); use
 | `crates/it-matters` | The daemon binary: CLI (`run`, `check`), `config.rs` (all config types, validation, config + docs tests), `service.rs` (`run`: starts the Matter thread and the tokio host). |
 | `docs/config/` | Configuration documentation (see the rule above). `docs/design/` holds design notes and the rs-matter spike. |
 | `examples/config.yaml` | The full worked example config. |
+| `crates/it-matters-plugin-sdk` | Async client library for Rust plugins (handshake, automatic pongs, `SetRequest` that must be answered). `examples/lamp.rs` is the code shown in `docs/plugins/sdk.md` (a test keeps them identical; keep the example rustfmt-formatted and paste it into the page). Tests run it against the real host over a Unix socket. |
+| `crates/plugins/linux-system`, `crates/plugins/linux-audio` | The bundled plugins: a library (logic, tested with fake sources/backends against the real host), a `main.rs` (flags, wiring) and the real backends (`logind.rs` over zbus; `exec.rs`/`backend.rs` over `wpctl` and `pw-dump`). Each has a page in `docs/plugins/` and a `CLI_ITEMS` list that a test checks against that page. |
+| `docs/plugins/` | One page per bundled plugin (every flag, semantics, examples, tests) and the SDK guide. |
 | `examples/plugins/demo.py` | A runnable demo plugin (stdlib Python); used in the e2e procedure. |
 | `docs/matter.md`, `docs/testing/e2e.md` | What controllers see (and what is verified), and the manual end-to-end procedure. |
 | `scripts/update-third-party-notices.py` | Generates `THIRD-PARTY-NOTICES.md`. |
@@ -125,6 +129,15 @@ Planned crates (see the plan): `it-matters-matter` (the real frontend on rs-matt
   changes to it (group kill, SIGKILL escalation, post-exit cleanup, the line cap) as was done originally.
   PR_SET_PDEATHSIG fires when the *thread* that spawned the child exits, which is only safe because the
   daemon runs the supervisor on the main thread of a current-thread runtime: keep it that way.
+- **Plugins must never change the user's real system in tests.** The audio plugin's real-PipeWire tests use a
+  temporary null sink (lowest priority) and assert the real default is untouched; keep it that way. Record
+  anything you capture/modify, restore it, and check. Real-system tests are `#[ignore]`d (CI has no PipeWire
+  or logind). `wpctl` takes only ids and `@DEFAULT_AUDIO_SINK@`, not names; the plugin resolves names itself.
+- **Plugin conventions:** one loop owns the thing being controlled (reads and writes never overlap); send only
+  changes; keep the last value when a read fails and log the error once; run external tools with a timeout
+  *below* the plugin's `timeout_ms` and with `LC_ALL=C`; do not enable zbus's `tokio` feature (it would change
+  how zbus behaves inside the daemon through feature unification: plugins use the same zbus features as
+  rs-matter).
 - **Host design:** one actor task owns the registry, so changes and their frontend events are totally
   ordered; sessions are generic over the stream. The frontend boundary is channels (`async-channel`),
   not async trait calls, because rs-matter will drain it from its own executor. Event channels are

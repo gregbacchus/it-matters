@@ -1,0 +1,21 @@
+[package]
+name = "it-matters-plugin-linux-system"
+description = "it-matters plugin: reports whether the computer is online and a user is signed in (systemd-logind)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+it-matters-model = { workspace = true }
+it-matters-plugin-sdk = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync", "macros"] }
+# The same version and features as rs-matter uses in the daemon (no `tokio` feature, which would change
+# how zbus runs inside the daemon when the workspace is built as a whole).
+zbus = "5.8"
+futures-lite = "2"
+
+[dev-dependencies]
+it-matters-core = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync", "macros", "net", "io-util"] }

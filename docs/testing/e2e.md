@@ -84,3 +84,58 @@ again; read the Aggregator's parts list (endpoint 1) to see topology changes.
 * Do not use `pkill -f`/`pgrep -f` with a pattern that also appears in your own command line: it matches
   the shell running it. Write the pattern as `e2e/[p]lugin.py` (the bracket stops it matching itself).
 * A debug build needs a few GB of disk for rs-matter; build with `CARGO_TARGET_DIR` on a large disk.
+
+## Testing the Linux plugins (without touching your real audio)
+
+The bundled [Linux plugins](../plugins/README.md) read your real desktop (sign-in state, microphone use) and
+control the speaker. To test the **writes** safely, point the audio plugin at a **disposable null speaker**
+instead of your real one. It is created with `pw-cli` and exists only while that process runs; the lowest
+priority keeps WirePlumber from ever making it the default:
+
+```bash
+# Keep pw-cli alive for 15 minutes (it owns the speaker); detach it from the terminal.
+setsid nohup bash -c "(echo 'create-node adapter { factory.name=support.null-audio-sink node.name=it-matters-test-sink \
+media.class=Audio/Sink audio.position=[FL,FR] priority.session=1 priority.driver=1 object.linger=false }'; sleep 900) | pw-cli" \
+  > /dev/null 2>&1 < /dev/null &
+wpctl get-volume @DEFAULT_AUDIO_SINK@     # note your real volume; it must be unchanged at the end
+```
+
+Configuration (adjust the paths; `--sink` takes the node name):
+
+```yaml
+plugins:
+  - id: linux-system
+    run:
+      command: /path/to/target/debug/it-matters-plugin-linux-system
+      args: [--device, e2e-pc, --name, E2E PC]
+  - id: linux-audio
+    run:
+      command: /path/to/target/debug/it-matters-plugin-linux-audio
+      args: [--device, e2e-pc-audio, --name, E2E PC Audio, --sink, it-matters-test-sink, --poll-ms, "500"]
+```
+
+After commissioning (section 3) the controller sees a Speaker (volume and mute), an Occupancy Sensor
+(microphone) and two Contact Sensors (online, signed in); read the endpoint ids from the shell's
+`ready endpoint#` lines. Then:
+
+* `attributes booleanstate read statevalue <node> <signed-in endpoint> --remote`: `true` on a desktop session.
+* Microphone: while `timeout 6 pw-cat --record /dev/null` runs (a capture from the default microphone to
+  nowhere), `attributes occupancysensing read occupancy <node> <mic endpoint> --remote` is `{"occupied":true}`;
+  after it ends, `false`. Capturing the speaker's monitor (`pw-cat --record -P stream.capture.sink=true
+  --target <sink id> /dev/null`) does **not** turn it on.
+* `commands levelcontrol movetolevel '{"level":127,"transitionTime":0,"optionsMask":{},"optionsOverride":{}}' <node> <speaker endpoint>`
+  makes `wpctl get-volume <test sink id>` print `Volume: 0.50`; `commands onoff off ...` shows `[MUTED]`,
+  `commands onoff toggle ...` unmutes; `commands levelcontrol step '{"stepMode":0,"stepSize":25,...}' ...`
+  raises it by about 10 %.
+
+Clean up and check nothing of yours changed:
+
+```bash
+kill -TERM <daemon pid>                    # the plugins stop with it
+kill $(pgrep -x pw-cli)                    # removes the test speaker
+wpctl get-volume @DEFAULT_AUDIO_SINK@      # unchanged
+```
+
+(WirePlumber remembers a volume per node name, so a test speaker of the same name starts at whatever you last
+set it to.) The automated `#[ignore]`d tests do the same safely by themselves: see
+[`plugins/linux-audio.md`](../plugins/linux-audio.md#testing).

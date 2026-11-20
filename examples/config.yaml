@@ -21,9 +21,11 @@ plugins:
   # `cannot start` and keeps retrying, so point it at a real plugin.
   - id: linux-system
     run:
-      command: /usr/lib/it-matters/plugin-linux-system
-      args: []
+      command: /usr/local/bin/it-matters-plugin-linux-system   # bundled: online / signed-in sensors
+      args: [--device, office-pc, --name, Office PC]
       timeout_ms: 2000        # how long the plugin has to answer a controller's write
+  # The bundled audio plugin (speaker volume/mute, microphone in use) is configured the same way:
+  #   command: /usr/local/bin/it-matters-plugin-linux-audio, args: [--device, office-pc-audio]
   # A remote agent (e.g. a desktop) that connects over TCP. Non-loopback needs a token file.
   # NOT IMPLEMENTED YET: validated, but nothing listens (the daemon logs a warning at start).
   - id: desktop-agent

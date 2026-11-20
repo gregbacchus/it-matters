@@ -17,10 +17,13 @@ wire protocol is in [`design/plugin-protocol.md`](design/plugin-protocol.md).
 Status: works.
 
 ```bash
-cargo build --release                     # builds target/release/it-matters
+cargo build --release                     # builds target/release/it-matters and the bundled plugins
 sudo install -m 0755 target/release/it-matters /usr/local/bin/it-matters
 it-matters --version
 ```
+
+The same build also produces the bundled plugins `it-matters-plugin-linux-system` and
+`it-matters-plugin-linux-audio`; install them next to the daemon (see [bundled plugins](plugins/README.md)).
 
 The first build compiles rs-matter and about 200 other crates (a few minutes; a debug build needs several
 GB of disk).
@@ -189,6 +192,11 @@ A step-by-step procedure with the matter.js controller is in [`testing/e2e.md`](
 ## Writing a plugin
 
 Status: works. The daemon starts plugins listed with `run`; you can also start one yourself.
+
+**Ready-made plugins** for a Linux desktop are bundled: [`it-matters-plugin-linux-system`](plugins/linux-system.md)
+(online, signed in) and [`it-matters-plugin-linux-audio`](plugins/linux-audio.md) (speaker volume and mute,
+microphone in use); see [bundled plugins](plugins/README.md). To write your own in Rust use the
+[SDK](plugins/sdk.md).
 
 A plugin is any program that connects to the Unix socket (`ipc.socket`, default
 `/run/it-matters/plugins.sock`) and exchanges one JSON object per line. Its `plugin` id in `hello` must

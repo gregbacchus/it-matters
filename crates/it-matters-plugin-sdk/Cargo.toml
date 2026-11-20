@@ -1,0 +1,16 @@
+[package]
+name = "it-matters-plugin-sdk"
+description = "Client library for writing it-matters plugins in Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+it-matters-model = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+
+[dev-dependencies]
+it-matters-core = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "sync", "macros", "test-util"] }
