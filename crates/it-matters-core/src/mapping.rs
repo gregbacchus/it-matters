@@ -8,7 +8,7 @@
 //! | read-only boolean, role `contact` or no role | Contact Sensor (Boolean State) |
 //! | read-only boolean, role `occupancy` | Occupancy Sensor |
 //! | writable boolean, no role | On/Off Plug-in Unit |
-//! | one level + one boolean with role `mute` (both writable) | Speaker (Level Control + On/Off) |
+//! | one level + one boolean with role `mute` (both writable, or both read-only) | Speaker (Level Control + On/Off); a read-only speaker refuses every write |
 //!
 //! A Speaker's On/Off means *not muted*: `mute = true` is On/Off `false`. That is what the Matter
 //! Speaker device type defines.
@@ -72,8 +72,13 @@ pub fn map_device(spec: &DeviceSpec) -> Result<Vec<Unit>, String> {
     let mut units = Vec::new();
     match (levels.first(), mutes.first()) {
         (Some(level), Some(mute)) => {
-            if !level.writable || !mute.writable {
-                return err(format!("speaker capabilities {:?} and {:?} must both be writable", level.id, mute.id));
+            // Both writable (controllers can change them) or both read-only (controllers can see them; the
+            // registry refuses writes). A mixture has no sensible meaning.
+            if level.writable != mute.writable {
+                return err(format!(
+                    "speaker capabilities {:?} and {:?} must both be writable or both read-only",
+                    level.id, mute.id
+                ));
             }
             units.push(Unit {
                 id: level.id.clone(),
@@ -178,6 +183,14 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_level_and_mute_form_a_read_only_speaker() {
+        let d = device(vec![level("volume", false), boolean("mute", false, Some(Role::Mute))]);
+        let units = map_device(&d).unwrap();
+        assert_eq!((units.len(), units[0].kind), (1, UnitKind::Speaker));
+        assert_eq!(units[0].shape(), "speaker:volume+mute", "the same shape: only the writability differs");
+    }
+
+    #[test]
     fn capability_order_does_not_change_the_speaker() {
         let d = device(vec![boolean("mute", true, Some(Role::Mute)), level("volume", true)]);
         assert_eq!(map_device(&d).unwrap()[0].capabilities, vec!["volume", "mute"]);
@@ -228,7 +241,14 @@ mod tests {
             e(vec![level("v", true), boolean("m", true, Some(Role::Mute)), boolean("n", true, Some(Role::Mute))])
                 .contains("more than one mute")
         );
-        assert!(e(vec![level("v", false), boolean("m", true, Some(Role::Mute))]).contains("must both be writable"));
+        assert!(
+            e(vec![level("v", false), boolean("m", true, Some(Role::Mute))])
+                .contains("must both be writable or both read-only")
+        );
+        assert!(
+            e(vec![level("v", true), boolean("m", false, Some(Role::Mute))])
+                .contains("must both be writable or both read-only")
+        );
     }
 
     #[test]

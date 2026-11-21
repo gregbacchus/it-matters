@@ -22,7 +22,7 @@ One device (`--device`, named `--name`) with two units:
 
 | Capability | Matter endpoint | Unique id | Writable | Meaning |
 |---|---|---|---|---|
-| `volume` + `mute` | **Speaker** named `<name> volume` | `<device>/volume` | yes | the speaker's volume (0-100) and mute |
+| `volume` + `mute` | **Speaker** named `<name> volume` | `<device>/volume` | yes (not with `--read-only`) | the speaker's volume (0-100) and mute |
 | `mic-active` | **Occupancy Sensor** named `<name> mic-active` | `<device>/mic-active` | no | an application is using a microphone |
 
 ### Volume and mute
@@ -43,6 +43,29 @@ One device (`--device`, named `--name`) with two units:
 Bluetooth or virtual microphones). It is **`false`** for an application capturing *desktop audio* (a screen
 recorder recording the speakers' monitor, which is linked from the speaker, not a source), for paused streams
 and for a source that merely exists. Verified against both kinds of capture.
+
+## Read-only mode
+
+With `--read-only` the plugin only **reads** the speaker. Nothing a controller (or an automation) does can change
+the volume or mute: the plugin declares the volume and mute as not writable, so the bridge refuses every write
+itself, without asking the plugin, and as a second line of defence the plugin would refuse a write that
+reached it anyway. Reading is unchanged: the volume and mute follow the desktop (within `--poll-ms`), and
+the microphone sensor works as usual.
+
+Matter has no "read-only speaker" device type, so the device still appears as a **Speaker**, and a controller's
+app may still show a volume slider and mute button. Using them fails (the controller reports that the
+device did not respond or the command failed) and nothing changes; the reason is in the daemon's log
+(`capability "volume" is read-only`). If you only want to *see* the volume and mute in an automation, this is
+what you want; if you do not want the controls at all, do not run the audio plugin (the
+[system plugin](linux-system.md) reports sign-in state with no audio at all).
+
+```yaml
+plugins:
+  - id: linux-audio
+    run:
+      command: /usr/local/bin/it-matters-plugin-linux-audio
+      args: [--read-only]
+```
 
 ## Choosing the speaker (`--sink`)
 
@@ -68,7 +91,7 @@ itself. The 1.5 second limit is fixed: leave the plugin's `run.timeout_ms` at 20
 ## Command line
 
 ```
-it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] [--poll-ms <ms>]
+it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] [--poll-ms <ms>] [--read-only]
     [--connect <host:port> --plugin-id <id> [--token-file <file>]]
 ```
 
@@ -78,6 +101,7 @@ it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] 
 | `--name <name>` | `<host name> Audio` | The name shown in controllers (`devices.<id>.name` in the daemon configuration overrides it). |
 | `--sink <target>` | `@DEFAULT_AUDIO_SINK@` | The speaker to control: `@DEFAULT_AUDIO_SINK@`, a node id, or a node name (see above). Anything else starting with `@` is rejected. |
 | `--poll-ms <ms>` | `1000` | How often to read the audio state, at least 100. |
+| `--read-only` | off | **Report the volume and mute but never change them.** Controllers still see the speaker (its volume and mute update as you use the desktop), but every attempt to change it fails, and the plugin never runs `wpctl set-volume` or `wpctl set-mute`. The microphone sensor is unaffected. See [read-only mode](#read-only-mode). |
 | `--connect <host:port>` | none | Run as a **remote agent**: connect to the bridge's TCP listener for this agent (`plugins[].connect.listen` in the bridge's configuration) instead of the local socket. Reconnects forever, with a delay that grows from 1 to 30 seconds. See [remote agents](README.md#running-on-another-machine-as-a-remote-agent). |
 | `--plugin-id <id>` | `$IT_MATTERS_PLUGIN_ID` | With `--connect`: the plugin `id` the bridge configured for this agent (required unless the environment variable is set). |
 | `--token-file <file>` | none | With `--connect`: the file holding the agent's token, the same as the bridge's `token_file`. Omit it only for a bridge listener on loopback without a token. |

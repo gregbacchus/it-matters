@@ -27,9 +27,12 @@ Every bridged endpoint is also a *Bridged Node* and carries **Bridged Device Bas
 | read-only boolean, role `contact` or none | Contact Sensor (0x0015) | Boolean State: `StateValue` = the plugin's value. |
 | read-only boolean, role `occupancy` | Occupancy Sensor (0x0107) | Occupancy Sensing: `Occupancy` bit 0 = the plugin's value; sensor type *Physical Contact*. |
 | writable boolean, no role | On/Off Plug-in Unit (0x010A) | On/Off: `OnOff` = the plugin's value; commands On, Off, Toggle. |
-| writable level + writable boolean with role `mute` | Speaker (0x0022) | On/Off: `OnOff` is **On when not muted**; Level Control: `CurrentLevel` (below). |
+| level + boolean with role `mute`, both writable (or both read-only: controllers then cannot change them) | Speaker (0x0022) | On/Off: `OnOff` is **On when not muted**; Level Control: `CurrentLevel` (below). |
 
 ### Speaker details
+
+* A speaker whose plugin declared it **read-only** (the audio plugin's `--read-only`) still appears as a Speaker and
+  reports its level and mute, but every write from a controller fails and changes nothing.
 
 * `CurrentLevel` runs from 0 to 254 (`MinLevel` 0, `MaxLevel` 254) and is scaled from the plugin's
   `min..=max` (rounding to nearest). Ranges up to 254 wide survive the round trip exactly.

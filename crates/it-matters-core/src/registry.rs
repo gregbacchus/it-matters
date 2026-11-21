@@ -497,6 +497,22 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_speaker_reports_values_but_refuses_every_controller_write() {
+        let mut r = registry();
+        let mut read_only = audio();
+        for c in &mut read_only.capabilities {
+            c.writable = false;
+        }
+        r.register("p", read_only).unwrap();
+        // Values still flow to the Matter side...
+        let ev = r.update("p", "desktop-audio", "volume", Value::Int(100)).unwrap();
+        assert_eq!(ev, vec![FrontendEvent::SetAttr { endpoint: 2, value: AttrValue::CurrentLevel(254) }]);
+        // ...but a controller cannot change them, and the plugin is never asked.
+        assert!(r.route(2, Write::CurrentLevel(10)).unwrap_err().contains("read-only"));
+        assert!(r.route(2, Write::OnOff(false)).unwrap_err().contains("read-only"));
+    }
+
+    #[test]
     fn writes_to_unreachable_devices_are_refused() {
         let mut r = registry();
         r.register("p", audio()).unwrap();

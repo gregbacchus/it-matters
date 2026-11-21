@@ -114,10 +114,10 @@ at `register`** with an `error` that names the capability: nothing is dropped si
 | a read-only `boolean` with role `contact` or none | a **Contact Sensor** (unit id = the capability id) |
 | a read-only `boolean` with role `occupancy` | an **Occupancy Sensor** |
 | a writable `boolean` with no role | an **On/Off Plug-in Unit** |
-| exactly one writable `level` **and** exactly one writable `boolean` with role `mute` | a **Speaker** (unit id = the level's id) |
+| exactly one `level` **and** exactly one `boolean` with role `mute`, **both writable or both read-only** | a **Speaker** (unit id = the level's id). A read-only speaker reports its values but every controller write is refused by the host (the plugin is never asked) |
 
-Rejected: a `level` without a `mute` (and the reverse); more than one `level` or more than one `mute`; a
-read-only level or mute; a *writable* boolean with role `contact` or `occupancy` (sensors are read-only); a
+Rejected: a `level` without a `mute` (and the reverse); more than one `level` or more than one `mute`; a level
+and a mute of which only one is writable; a *writable* boolean with role `contact` or `occupancy` (sensors are read-only); a
 device that maps to no unit. A device may contain a speaker **and** any number of sensors or plugs.
 
 How values map: a Speaker's volume is scaled from `min..=max` to Matter's `0..=254` (rounded; ranges up to 254
@@ -329,7 +329,7 @@ it**; rely on the message type and on whether the connection stays open.
 | `device "{id}": capability "{c}": min must be less than max` | A level with `min >= max`. |
 | `device "{id}": more than one level capability; at most one speaker per device is supported` | Unmappable (section 4). |
 | `device "{id}": more than one mute capability; at most one speaker per device is supported` | Unmappable. |
-| `device "{id}": speaker capabilities "{a}" and "{b}" must both be writable` | Unmappable. |
+| `device "{id}": speaker capabilities "{a}" and "{b}" must both be writable or both read-only` | Unmappable: one of the speaker's capabilities is writable and the other is not. |
 | `device "{id}": level capability "{c}" needs a boolean with role "mute" to form a speaker` | Unmappable. |
 | `device "{id}": mute capability "{c}" needs a level capability to form a speaker` | Unmappable. |
 | `device "{id}": capability "{c}" has role {role} but is writable; sensors are read-only` | A writable `contact`/`occupancy` boolean. `{role}` is `Contact` or `Occupancy`. |

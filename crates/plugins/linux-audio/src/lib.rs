@@ -16,15 +16,26 @@ pub mod graph;
 use backend::{Audio, Reading, Target};
 
 /// Command line flags; `docs/plugins/linux-audio.md` must document each (a test checks it).
-pub const CLI_ITEMS: &[&str] =
-    &["--device", "--name", "--sink", "--poll-ms", "--connect", "--token-file", "--plugin-id", "--help", "--version"];
+pub const CLI_ITEMS: &[&str] = &[
+    "--device",
+    "--name",
+    "--sink",
+    "--poll-ms",
+    "--read-only",
+    "--connect",
+    "--token-file",
+    "--plugin-id",
+    "--help",
+    "--version",
+];
 
 pub const CAP_VOLUME: &str = "volume";
 pub const CAP_MUTE: &str = "mute";
 pub const CAP_MIC: &str = "mic-active";
 
-/// The device: a speaker (volume 0-100 and mute) and a microphone-in-use sensor.
-pub fn device_spec(device: &str, name: &str) -> DeviceSpec {
+/// The device: a speaker (volume 0-100 and mute) and a microphone-in-use sensor. With `read_only` the volume
+/// and mute are declared **not writable**: controllers see them but the host refuses to change them.
+pub fn device_spec(device: &str, name: &str, read_only: bool) -> DeviceSpec {
     DeviceSpec {
         id: device.into(),
         name: name.into(),
@@ -32,13 +43,13 @@ pub fn device_spec(device: &str, name: &str) -> DeviceSpec {
             CapabilitySpec {
                 id: CAP_VOLUME.into(),
                 kind: CapabilityKind::Level { min: 0, max: 100 },
-                writable: true,
+                writable: !read_only,
                 role: None,
             },
             CapabilitySpec {
                 id: CAP_MUTE.into(),
                 kind: CapabilityKind::Boolean,
-                writable: true,
+                writable: !read_only,
                 role: Some(Role::Mute),
             },
             CapabilitySpec {
@@ -57,6 +68,8 @@ pub struct Args {
     pub name: Option<String>,
     pub sink: Target,
     pub poll: Duration,
+    /// `--read-only`: report the volume and mute but never change them.
+    pub read_only: bool,
     /// `--connect`, `--token-file`, `--plugin-id`: run as a remote agent instead of a daemon-started plugin.
     pub remote: RemoteOptions,
 }
@@ -75,6 +88,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed, Stri
         name: None,
         sink: Target::DefaultSink,
         poll: DEFAULT_POLL,
+        read_only: false,
         remote: RemoteOptions::default(),
     };
     let mut it = args.into_iter();
@@ -91,6 +105,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed, Stri
                 }
                 out.poll = Duration::from_millis(ms);
             }
+            "--read-only" => out.read_only = true,
             flag @ ("--connect" | "--token-file" | "--plugin-id") => out.remote.set(flag, value(flag)?)?,
             "-h" | "--help" => return Ok(Parsed::Help),
             "-V" | "--version" => return Ok(Parsed::Version),
@@ -126,7 +141,11 @@ async fn publish(client: &Client, device: &str, last: &mut Option<Reading>, now:
 }
 
 /// Applies a controller's write to the audio system.
-async fn apply<A: Audio>(audio: &mut A, request: &SetRequest) -> Result<(), String> {
+async fn apply<A: Audio>(audio: &mut A, request: &SetRequest, read_only: bool) -> Result<(), String> {
+    // The host never sends a write for a read-only device; this is the second line of defence.
+    if read_only {
+        return Err("this plugin runs with --read-only: it never changes the volume or mute".into());
+    }
     match (request.capability.as_str(), request.value) {
         (CAP_VOLUME, Value::Int(v)) if (0..=100).contains(&v) => audio.set_volume(v as u8).await,
         (CAP_MUTE, Value::Bool(m)) => audio.set_mute(m).await,
@@ -145,8 +164,9 @@ pub async fn run<A: Audio>(
     device: &str,
     name: &str,
     poll: Duration,
+    read_only: bool,
 ) -> String {
-    if let Err(e) = client.register(device_spec(device, name)).await {
+    if let Err(e) = client.register(device_spec(device, name, read_only)).await {
         return e.to_string();
     }
     let mut last: Option<Reading> = None;
@@ -170,7 +190,7 @@ pub async fn run<A: Audio>(
             () = sleep(poll) => {}
             event = events.next() => match event {
                 Some(Event::Set(request)) => {
-                    match apply(audio, &request).await {
+                    match apply(audio, &request, read_only).await {
                         Ok(()) => request.accept().await,
                         Err(e) => {
                             eprintln!("controller write failed: {e}");
@@ -193,10 +213,18 @@ mod tests {
 
     #[test]
     fn the_device_is_a_speaker_plus_an_occupancy_sensor() {
-        let d = device_spec("pc-audio", "PC Audio");
+        let d = device_spec("pc-audio", "PC Audio", false);
         assert!(d.validate().is_ok());
         let ids: Vec<_> = d.capabilities.iter().map(|c| (c.id.as_str(), c.writable)).collect();
         assert_eq!(ids, [(CAP_VOLUME, true), (CAP_MUTE, true), (CAP_MIC, false)]);
+    }
+
+    #[test]
+    fn read_only_makes_the_speaker_capabilities_not_writable() {
+        let d = device_spec("pc-audio", "PC Audio", true);
+        assert!(d.validate().is_ok());
+        let writable: Vec<_> = d.capabilities.iter().map(|c| (c.id.as_str(), c.writable)).collect();
+        assert_eq!(writable, [(CAP_VOLUME, false), (CAP_MUTE, false), (CAP_MIC, false)]);
     }
 
     fn args(a: &[&str]) -> Result<Parsed, String> {
@@ -215,6 +243,7 @@ mod tests {
         );
         let Ok(Parsed::Run(a)) = args(&[]) else { panic!() };
         assert_eq!((a.device, a.sink, a.poll), (None, Target::DefaultSink, DEFAULT_POLL));
+        assert!(!a.read_only, "writable by default");
     }
 
     #[test]
@@ -228,6 +257,12 @@ mod tests {
         assert_eq!(a.remote.plugin_id.as_deref(), Some("desktop-audio"));
         assert!(args(&["--connect", "nohost"]).is_err());
         assert!(args(&["--plugin-id", "Bad Id"]).is_err());
+    }
+
+    #[test]
+    fn the_read_only_flag_is_parsed() {
+        let Ok(Parsed::Run(a)) = args(&["--read-only"]) else { panic!() };
+        assert!(a.read_only);
     }
 
     #[test]

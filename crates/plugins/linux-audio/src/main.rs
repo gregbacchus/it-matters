@@ -11,7 +11,7 @@ const USAGE: &str = "\
 it-matters-plugin-linux-audio: the speaker's volume and mute, and whether a microphone is in use
 
 USAGE:
-    it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] [--poll-ms <ms>]
+    it-matters-plugin-linux-audio [--device <id>] [--name <name>] [--sink <target>] [--poll-ms <ms>] [--read-only]
                                   [--connect <host:port> --plugin-id <id> [--token-file <file>]]
 
 OPTIONS:
@@ -20,6 +20,7 @@ OPTIONS:
     --sink <target>   the speaker to control: @DEFAULT_AUDIO_SINK@ (default), a PipeWire node id, or a
                       node name such as alsa_output.pci-0000_c4_00.6.analog-stereo
     --poll-ms <ms>    how often to read the audio state, at least 100 (default 1000)
+    --read-only       only report the volume and mute: controllers cannot change them
     --connect <addr>  run as a remote agent: connect to the bridge's TCP listener for this agent
     --plugin-id <id>  with --connect: the plugin id the bridge configured for this agent
     --token-file <f>  with --connect: file holding the agent's token (see the bridge's token_file)
@@ -76,7 +77,7 @@ async fn main() -> ExitCode {
             Ok((client, mut events)) => {
                 println!("connected as plugin {:?}; device {device:?} ({name})", connector.target().plugin_id());
                 connector.reset();
-                let reason = run(&client, &mut events, &mut audio, &device, &name, args.poll).await;
+                let reason = run(&client, &mut events, &mut audio, &device, &name, args.poll, args.read_only).await;
                 eprintln!("it-matters-plugin-linux-audio: disconnected: {reason}");
             }
             Err(e) => eprintln!("it-matters-plugin-linux-audio: {e}"),

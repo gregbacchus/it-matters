@@ -82,6 +82,10 @@ impl Drop for Setup {
 }
 
 async fn start(name: &str, fake: Fake, poll: Duration) -> Setup {
+    start_with(name, fake, poll, false).await
+}
+
+async fn start_with(name: &str, fake: Fake, poll: Duration, read_only: bool) -> Setup {
     let dir = std::env::temp_dir().join(format!("it-matters-audio-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let socket = dir.join("p.sock");
@@ -97,7 +101,7 @@ async fn start(name: &str, fake: Fake, poll: Duration) -> Setup {
     let mut backend = fake.clone();
     tokio::spawn(async move {
         let (client, mut events) = connect(&socket, "linux-audio", "test").await.unwrap();
-        run(&client, &mut events, &mut backend, "pc-audio", "PC Audio", poll).await;
+        run(&client, &mut events, &mut backend, "pc-audio", "PC Audio", poll, read_only).await;
     });
     Setup { fake, frontend: FakeFrontend::new(frontend_end), dir }
 }
@@ -229,6 +233,78 @@ async fn a_slow_stale_read_never_overtakes_a_write() {
 }
 
 #[tokio::test]
+async fn read_only_mode_still_reports_everything_but_refuses_every_controller_write() {
+    let s = start_with("readonly", Fake::new(), Duration::from_millis(30), true).await;
+    let FrontendEvent::AddEndpoint(speaker) = event(&s).await else { panic!() };
+    assert_eq!(speaker.kind, it_matters_core::mapping::UnitKind::Speaker, "a read-only speaker is still a Speaker");
+    assert!(matches!(event(&s).await, FrontendEvent::AddEndpoint(_)));
+    assert_eq!(event(&s).await, level(2, 30));
+    // Changes made elsewhere (the keyboard, the desktop's slider) are still reported.
+    s.fake.state.lock().unwrap().volume = 80;
+    loop {
+        if event(&s).await == level(2, 80) {
+            break;
+        }
+    }
+    // A controller cannot change anything: the host refuses without asking the plugin.
+    for write in [Write::CurrentLevel(127), Write::OnOff(false), Write::OnOff(true)] {
+        let answer = s.frontend.write(2, write).await;
+        let reason = answer.recv().await.unwrap().unwrap_err();
+        assert!(reason.contains("read-only"), "{reason}");
+    }
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(s.fake.calls(), Vec::<String>::new(), "nothing may reach the audio system");
+}
+
+/// Even if a (buggy or hostile) host sent a `set` anyway, a read-only plugin must not change the volume.
+#[tokio::test]
+async fn a_read_only_plugin_refuses_a_set_even_if_one_arrives() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let dir = std::env::temp_dir().join(format!("it-matters-audio-ro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let socket = dir.join("p.sock");
+    let listener = bind_unix(&socket).unwrap();
+    let reply = Arc::new(Mutex::new(None::<String>));
+    let seen = reply.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (rd, mut wr) = stream.into_split();
+        let mut rd = BufReader::new(rd).lines();
+        rd.next_line().await.unwrap();
+        wr.write_all(b"{\"type\":\"welcome\",\"proto\":1}\n").await.unwrap();
+        // After the plugin has registered, send a write the plugin must not obey.
+        while let Ok(Some(line)) = rd.next_line().await {
+            if line.contains("\"type\":\"register\"") {
+                wr.write_all(
+                    b"{\"type\":\"set\",\"req_id\":9,\"device\":\"pc-audio\",\"capability\":\"volume\",\"value\":50}\n",
+                )
+                .await
+                .unwrap();
+            }
+            if line.contains("\"type\":\"set_result\"") {
+                *seen.lock().unwrap() = Some(line);
+            }
+        }
+    });
+    let fake = Fake::new();
+    let mut backend = fake.clone();
+    tokio::spawn(async move {
+        let (client, mut events) = connect(&socket, "linux-audio", "test").await.unwrap();
+        run(&client, &mut events, &mut backend, "pc-audio", "PC Audio", Duration::from_secs(60), true).await;
+    });
+    for _ in 0..100 {
+        if reply.lock().unwrap().is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    let line = reply.lock().unwrap().clone().expect("the plugin never answered the set");
+    assert!(line.contains("\"req_id\":9") && line.contains("\"ok\":false") && line.contains("--read-only"), "{line}");
+    assert_eq!(fake.calls(), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn only_changes_are_sent_over_the_wire() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let dir = std::env::temp_dir().join(format!("it-matters-audio-wire-{}", std::process::id()));
@@ -251,7 +327,7 @@ async fn only_changes_are_sent_over_the_wire() {
     let mut backend = fake.clone();
     tokio::spawn(async move {
         let (client, mut events) = connect(&socket, "linux-audio", "test").await.unwrap();
-        run(&client, &mut events, &mut backend, "pc-audio", "PC Audio", Duration::from_millis(10)).await;
+        run(&client, &mut events, &mut backend, "pc-audio", "PC Audio", Duration::from_millis(10), false).await;
     });
     let updates =
         |cap: &str| lines.lock().unwrap().iter().filter(|l| l.contains(&format!("\"capability\":\"{cap}\""))).count();
