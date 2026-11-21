@@ -14,10 +14,10 @@ proven about rs-matter and why the design looks as it does). It is a young proje
 
 Done: the rs-matter spike, the workspace and config, the plugin host, the rs-matter frontend wired into
 `it-matters run`, the plugin supervisor (the daemon starts, restarts and stops `run` plugins), the Rust plugin
-SDK, and the two bundled Linux plugins (`it-matters-plugin-linux-system`, `it-matters-plugin-linux-audio`).
-Verified end to end with the matter.js controller, see `docs/testing/e2e.md`. and remote (TCP) agents (challenge-response with a shared token, see `docs/design/plugin-protocol.md`). Not built yet: TLS for
-the agent connection, config reload, packaging (systemd units, installer), and verification with Home
-Assistant / Apple Home / Google Home.
+SDK, the two bundled Linux plugins, and remote (TCP) agents (challenge-response with a shared token; see
+`docs/design/plugin-protocol.md`). Verified end to end with the matter.js controller, see
+`docs/testing/e2e.md`. Not built yet: TLS for the agent connection, config reload, packaging (systemd units,
+installer), and verification with Home Assistant / Apple Home / Google Home.
 
 ## ⚠️ Rule: exhaustive documentation, kept current (configuration AND usage)
 
@@ -39,7 +39,9 @@ now and in the future. Undocumented or stale docs are bugs.
    controller, and how to write and run a plugin, each with a copy-paste example. Keep the table of
    commands and flags in step with the code (`CLI_ITEMS` in `crates/it-matters/src/main.rs`).
 3. **Plugin protocol (`docs/design/plugin-protocol.md`)**: every message and field, with examples,
-   in step with `crates/it-matters-model/src/protocol.rs`. Behaviours plugin authors depend on
+   in step with `crates/it-matters-model/src/protocol.rs` (a test requires a heading for every message type),
+   plus the errors, timings and rules; and **`docs/design/architecture.md`** for the seams (the frontend channel
+   boundary). Behaviours plugin authors depend on
    (mapping rules, timeouts, liveness) are documented there.
 4. **Examples**: `examples/config.yaml` sets *every* option with a comment. Every `yaml` block in the
    docs and README must be a **valid configuration** (a test loads each one with the real types); use a

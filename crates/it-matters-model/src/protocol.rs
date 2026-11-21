@@ -207,4 +207,69 @@ mod tests {
         assert!(proto_compatible(PROTO_VERSION));
         assert!(!proto_compatible(PROTO_VERSION + 1) && !proto_compatible(0));
     }
+
+    /// The wire name of every message type. The two `match`es below have no wildcard, so adding a variant
+    /// stops this compiling until it is listed here, and then the documentation test requires its heading.
+    fn plugin_type(m: &PluginMessage) -> &'static str {
+        match m {
+            PluginMessage::Hello { .. } => "hello",
+            PluginMessage::Register { .. } => "register",
+            PluginMessage::Unregister { .. } => "unregister",
+            PluginMessage::Update { .. } => "update",
+            PluginMessage::SetResult { .. } => "set_result",
+            PluginMessage::Ping => "ping",
+            PluginMessage::Pong => "pong",
+        }
+    }
+
+    fn host_type(m: &HostMessage) -> &'static str {
+        match m {
+            HostMessage::Challenge { .. } => "challenge",
+            HostMessage::Welcome { .. } => "welcome",
+            HostMessage::Set { .. } => "set",
+            HostMessage::Error { .. } => "error",
+            HostMessage::Ping => "ping",
+            HostMessage::Pong => "pong",
+        }
+    }
+
+    #[test]
+    fn the_protocol_reference_documents_every_message_type() {
+        let doc = include_str!("../../../docs/design/plugin-protocol.md");
+        let plugin_samples = [
+            hello(),
+            PluginMessage::Register { device: DeviceSpec { id: "d".into(), name: "n".into(), capabilities: vec![] } },
+            PluginMessage::Unregister { device: "d".into() },
+            PluginMessage::Update { device: "d".into(), capability: "c".into(), value: Value::Bool(true) },
+            PluginMessage::SetResult { req_id: 1, ok: true, error: None },
+            PluginMessage::Ping,
+            PluginMessage::Pong,
+        ];
+        let host_samples = [
+            HostMessage::Challenge { nonce: "00".into() },
+            HostMessage::Welcome { proto: 1 },
+            HostMessage::Set { req_id: 1, device: "d".into(), capability: "c".into(), value: Value::Bool(true) },
+            HostMessage::Error { message: "m".into() },
+            HostMessage::Ping,
+            HostMessage::Pong,
+        ];
+        let plugin_section = doc.split("## 5. Messages, plugin to host").nth(1).unwrap().split("## 6.").next().unwrap();
+        let host_section = doc.split("## 6. Messages, host to plugin").nth(1).unwrap().split("## 7.").next().unwrap();
+        for m in &plugin_samples {
+            let name = plugin_type(m);
+            assert!(encode_line(m).unwrap().contains(&format!("\"type\":\"{name}\"")), "{name} is not the wire name");
+            assert!(
+                plugin_section.contains(&format!("### `{name}`")),
+                "plugin->host message `{name}` has no heading in section 5"
+            );
+        }
+        for m in &host_samples {
+            let name = host_type(m);
+            assert!(encode_line(m).unwrap().contains(&format!("\"type\":\"{name}\"")), "{name} is not the wire name");
+            assert!(
+                host_section.contains(&format!("### `{name}`")),
+                "host->plugin message `{name}` has no heading in section 6"
+            );
+        }
+    }
 }
