@@ -166,7 +166,7 @@ python3 examples/plugins/demo.py --connect 192.168.1.10:7550 --plugin-id desktop
 
 * A wrong token (`--token-file` with other contents) or a wrong `--plugin-id` is refused with
   `authentication failed`; the daemon log has a `host: authentication failed ... from <address>` warning.
-* **Power loss:** `kill -STOP <agent pid>` freezes the agent without closing its connection, like a computer
+* **Power loss:** (get the pid with a pattern that cannot match your own shell, e.g. `pgrep -f '[i]t-matters-plugin-linux-system --device'`, and check `/proc/<pid>/comm`; freezing your own shell proves nothing) `kill -STOP <agent pid>` freezes the agent without closing its connection, like a computer
   losing power. After about 30 seconds the devices' `Reachable` becomes `false` (the log shows nothing: the
   bridge dropped the silent connection). `kill -CONT <agent pid>`: the agent notices its connection is gone,
   reconnects after a second or two, and the devices are back **on the same endpoints**.

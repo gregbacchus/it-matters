@@ -58,7 +58,8 @@ Against the **matter.js shell** controller (`@matter/nodejs-shell` 0.18.0) on Li
   mute polarity inverted;
 * `Reachable` turning `false` on plugin disconnect, writes then failing, and recovery on reconnect with
   the same endpoint ids;
-* devices appearing while a controller is connected (parts list `[]` to `[2,3,4]`).
+* devices appearing while a controller is connected (parts list `[]` to `[2,3,4]`);
+* **remote agents over TCP** (the bridge's real LAN address; a Rust and a Python agent): wrong tokens and ids are refused identically; an agent frozen with `SIGSTOP` (a powered-off computer) shows `Reachable = false` after about 30 seconds, and after it resumes it reconnects by itself and its devices return on the same endpoints.
 
 **Not verified:** Home Assistant, Apple Home and Google Home (the bridge uses test attestation
 certificates, so these may warn about an uncertified device or refuse it); subscriptions/reports as seen by
