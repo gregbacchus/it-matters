@@ -39,7 +39,9 @@ now and in the future. Undocumented or stale docs are bugs.
    controller, and how to write and run a plugin, each with a copy-paste example. Keep the table of
    commands and flags in step with the code (`CLI_ITEMS` in `crates/it-matters/src/main.rs`).
 3. **Plugin protocol (`docs/design/plugin-protocol.md`)**: every message and field, with examples,
-   in step with `crates/it-matters-model/src/protocol.rs` (a test requires a heading for every message type),
+   in step with `crates/it-matters-model/src/protocol.rs` (a test requires a heading for every message type; the exact error texts are checked in both directions by
+   `crates/it-matters-core/tests/errors.rs`; `plugin-protocol.schema.json` is checked against the parser by
+   `crates/it-matters-model/tests/schema.rs`: update the schema, the reference and the tests together),
    plus the errors, timings and rules; and **`docs/design/architecture.md`** for the seams (the frontend channel
    boundary). Behaviours plugin authors depend on
    (mapping rules, timeouts, liveness) are documented there.
@@ -78,6 +80,10 @@ docs cannot hide typos). Keep that attribute on new structs, and `#[serde(defaul
 python3 -I scripts/update-third-party-notices.py          # regenerate
 python3 -I scripts/update-third-party-notices.py --check  # is it current? (CI runs this)
 ```
+
+The generator takes the crates from `cargo tree -e normal` for each shipped binary (not from `cargo metadata`, whose
+resolve graph unifies dev-dependency features and over-counts), so dev-dependencies such as the JSON Schema
+validator used in tests do not appear.
 
 Whenever you add, remove or update a dependency, regenerate it and commit the result in the same
 change. Do not add a dependency whose licence is not permissive (MIT / Apache-2.0 / BSD / ISC /

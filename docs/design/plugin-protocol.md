@@ -20,6 +20,7 @@ in **any language**. (The Rust SDK, [`plugins/sdk.md`](../plugins/sdk.md), is on
 10. [Timings and limits](#10-timings-and-limits)
 11. [Versioning and compatibility](#11-versioning-and-compatibility)
 12. [Example sessions](#12-example-sessions)
+13. [Machine-readable schema](#13-machine-readable-schema)
 
 ## 1. Transports
 
@@ -294,9 +295,12 @@ proof = hex( HMAC-SHA256( key = token bytes,
 
 ## 9. Errors
 
-Messages the host sends in `error`, grouped by what happens next (`{x}` is filled in):
+The `message` of every `error` the host sends to a plugin is listed here with the **exact text** (`{x}` stands
+for a value filled in: ids are shown in double quotes). A test triggers each one against the real host and
+fails if this list and the code differ in either direction. The text is for people and logs: **do not parse
+it**; rely on the message type and on whether the connection stays open.
 
-**The connection is closed afterwards**
+**The host closes the connection afterwards**
 
 | Message | Cause |
 |---|---|
@@ -305,23 +309,35 @@ Messages the host sends in `error`, grouped by what happens next (`{x}` is fille
 | `unsupported protocol {n}; this host speaks 1` | `proto` is not 1. |
 | `plugin "{id}" is not configured` | Unix socket: the id is not listed under `plugins`. |
 | `plugin "{id}" is a remote agent: it connects to its own TCP listener, not this socket` | Unix socket: the id is configured with `connect`. |
-| `plugin "{id}" is already connected` | Unix socket (or a TCP listener without a token): that plugin is live. |
+| `plugin "{id}" is already connected` | Unix socket (or a TCP listener without a token): that plugin already has a live session. |
 | `authentication failed` | TCP: any login failure (section 7). |
-| `already said hello` | A second `hello`. |
+| `already said hello` | A second `hello` in one session. |
 | `frame too long` | A line over 65536 bytes. |
-| `invalid frame: {reason}`, `empty frame`, `frame is not valid UTF-8` | Section 2. |
+| `invalid frame: {reason}` | The line is not a valid message (not JSON, unknown `type`, a missing or mistyped field). `{reason}` is the parser's text. |
+| `empty frame` | A blank line. |
+| `frame is not valid UTF-8` | The line is not UTF-8 text. |
 
-**The connection stays open**
+**The connection stays open** (the request had no effect; the plugin may carry on)
 
-| Message (examples) | Cause |
+| Message | Cause |
 |---|---|
-| `device "{id}": id must be 1-64 characters of a-z, 0-9, '-' or '_'` | Invalid device or capability id. |
-| `device "{id}": name must not be empty`, `needs at least one capability`, `duplicate capability id "{c}"`, `capability "{c}": min must be less than max` | Invalid device (section 4). |
-| `device "{id}": level capability "{c}" needs a boolean with role "mute" to form a speaker` (and similar) | Unmappable device (section 4). |
+| `device "{id}": id must be 1-64 characters of a-z, 0-9, '-' or '_'` | Invalid device id. |
+| `device "{id}": name must not be empty` | Blank device name. |
+| `device "{id}": needs at least one capability` | `capabilities` is empty. |
+| `device "{id}": capability id "{c}" must be 1-64 characters of a-z, 0-9, '-' or '_'` | Invalid capability id. |
+| `device "{id}": duplicate capability id "{c}"` | Two capabilities share an id. |
+| `device "{id}": capability "{c}": min must be less than max` | A level with `min >= max`. |
+| `device "{id}": more than one level capability; at most one speaker per device is supported` | Unmappable (section 4). |
+| `device "{id}": more than one mute capability; at most one speaker per device is supported` | Unmappable. |
+| `device "{id}": speaker capabilities "{a}" and "{b}" must both be writable` | Unmappable. |
+| `device "{id}": level capability "{c}" needs a boolean with role "mute" to form a speaker` | Unmappable. |
+| `device "{id}": mute capability "{c}" needs a level capability to form a speaker` | Unmappable. |
+| `device "{id}": capability "{c}" has role {role} but is writable; sensors are read-only` | A writable `contact`/`occupancy` boolean. `{role}` is `Contact` or `Occupancy`. |
 | `device "{id}" is already registered by plugin "{p}"` | Another plugin owns the id. |
-| `device "{id}" is not registered`, `device "{id}" belongs to plugin "{p}"` | `update`/`unregister` for a device that is not yours. |
-| `device "{id}" has no capability "{c}"` | Unknown capability. |
-| `value {v} is not valid for "{id}"/"{c}"` | Wrong shape or out of range. |
+| `device "{id}" is not registered` | `update` or `unregister` for an unknown device. |
+| `device "{id}" belongs to plugin "{p}"` | `update` or `unregister` for another plugin's device. |
+| `device "{id}" has no capability "{c}"` | `update` for an unknown capability. |
+| `value {v} is not valid for "{id}"/"{c}"` | The value has the wrong shape or is out of range. `{v}` is written the way the host's Rust code prints it, for example `Int(101)` or `Bool(true)`. |
 
 ## 10. Timings and limits
 
@@ -385,3 +401,30 @@ and the host closes a connection that sends an unknown type.
 < {"type":"error","message":"authentication failed"}
 (the host closes the connection)
 ```
+
+## 13. Machine-readable schema
+
+[`plugin-protocol.schema.json`](plugin-protocol.schema.json) is a JSON Schema (draft 2020-12) for every message.
+Validate what a plugin sends against `#/$defs/PluginMessage` and what the host sends against
+`#/$defs/HostMessage` (they are separate because `ping` and `pong` exist in both directions). For example, in
+Python with the `jsonschema` package:
+
+```python
+import json, jsonschema
+schema = json.load(open("docs/design/plugin-protocol.schema.json"))
+schema["$ref"] = "#/$defs/PluginMessage"          # or "#/$defs/HostMessage"
+jsonschema.validate(json.loads(line), schema)
+```
+
+It is a *structural* description, checked by tests against the real parser: for a labelled set of valid and
+invalid messages the schema and the host's parser agree, and every JSON example in this document validates.
+**It cannot express** these rules, which the host enforces and which are described above:
+
+* capability ids being unique within a device, and `min` being less than `max` (section 4);
+* the mapping rules (a `level` needs a `mute`, sensors are read-only, and so on) and ownership (section 4, 8);
+* a whole number written with a decimal point (`30.0`): the schema calls it an integer, the host rejects it;
+* integers outside the 64-bit range;
+* anything about the *order* of messages, timings, or authentication (sections 3, 7, 10).
+
+Where the schema and the host disagree, the host decides. A test requires the schema to have a definition for
+every message type.

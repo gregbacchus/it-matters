@@ -47,6 +47,26 @@ def license_files(directory):
 # ---------------------------------------------------------------------------------------------
 
 
+def shipped_names():
+    """`(name, version)` of every third-party crate compiled into any shipped binary.
+
+    Uses `cargo tree -e normal`, which (unlike the resolve graph of `cargo metadata`) does not unify the
+    features that dev-dependencies enable into the normal build, so test-only crates are not listed."""
+    out = set()
+    for binary in BINARIES:
+        text = subprocess.check_output(
+            ["cargo", "tree", "-p", binary, "-e", "normal", "--target", TARGET, "--prefix", "none",
+             "--format", "{p}", "--locked"],
+            cwd=ROOT, text=True,
+        )
+        for line in text.splitlines():
+            parts = line.replace(" (*)", "").replace(" (proc-macro)", "").split()
+            # "name v1.2.3" for registry and git crates; workspace crates carry a "(/path)" suffix.
+            if len(parts) >= 2 and parts[1].startswith("v") and not any(p.startswith("(/") for p in parts[2:]):
+                out.add((parts[0], parts[1][1:]))
+    return out
+
+
 def runtime_crates():
     meta = json.loads(
         subprocess.check_output(
@@ -54,25 +74,12 @@ def runtime_crates():
             cwd=ROOT,
         )
     )
-    packages = {p["id"]: p for p in meta["packages"]}
-    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
-    roots = [p["id"] for p in meta["packages"] if p["name"] in BINARIES]
-    if len(roots) != len(BINARIES):
-        fail(f"expected packages {BINARIES} in the workspace")
-    seen, stack = set(), list(roots)
-    while stack:
-        pid = stack.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        for dep in nodes[pid]["deps"]:
-            # kind None = a normal dependency (linked in); "build" / "dev" are not shipped.
-            if any(k["kind"] is None for k in dep["dep_kinds"]):
-                stack.append(dep["pkg"])
-    seen -= set(roots)
-    # Our own workspace crates (path dependencies) are not third-party.
-    seen = {p for p in seen if packages[p].get("source")}
-    return sorted((packages[p] for p in seen), key=lambda p: (p["name"], p["version"]))
+    wanted = shipped_names()
+    found = [p for p in meta["packages"] if (p["name"], p["version"]) in wanted and p.get("source")]
+    missing = wanted - {(p["name"], p["version"]) for p in found}
+    if missing:
+        fail(f"cargo tree lists crates that cargo metadata does not know: {sorted(missing)}")
+    return sorted(found, key=lambda p: (p["name"], p["version"]))
 
 
 def crate_entries(crates):

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gregbacchus/it-matters/blob/main/docs/design/plugin-protocol.schema.json",
+  "title": "it-matters plugin protocol, version 1",
+  "description": "The structure of every JSON line of the it-matters plugin protocol. Validate a message a plugin sends against #/$defs/PluginMessage and a message the host sends against #/$defs/HostMessage. The prose reference is plugin-protocol.md; where this schema and the host differ, the host decides. What a schema cannot express (see plugin-protocol.md, section 13): unique capability ids within a device, min < max, whole numbers written with a decimal point (the host rejects 30.0 although it is an integer value), and integers outside the 64-bit range.",
+  "$defs": {
+    "Id": {
+      "description": "A device or capability id: 1-64 characters of a-z, 0-9, '-' or '_'.",
+      "type": "string",
+      "pattern": "^[a-z0-9_-]{1,64}$"
+    },
+    "Value": {
+      "description": "A capability value: true/false for a boolean capability, an integer for a level.",
+      "oneOf": [{ "type": "boolean" }, { "type": "integer" }]
+    },
+    "Capability": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "type": { "enum": ["boolean", "level"] },
+        "writable": { "type": "boolean", "default": false },
+        "role": { "enum": ["contact", "occupancy", "mute", null] },
+        "min": { "type": "integer" },
+        "max": { "type": "integer" }
+      },
+      "if": { "properties": { "type": { "const": "level" } }, "required": ["type"] },
+      "then": { "required": ["min", "max"] }
+    },
+    "Device": {
+      "type": "object",
+      "required": ["id", "name", "capabilities"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "name": { "description": "Not blank.", "type": "string", "pattern": "\\S" },
+        "capabilities": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/Capability" } }
+      }
+    },
+    "PluginMessage": {
+      "description": "A message from a plugin to the host.",
+      "oneOf": [
+        {
+          "title": "hello",
+          "type": "object",
+          "required": ["type", "plugin", "version", "proto"],
+          "properties": {
+            "type": { "const": "hello" },
+            "plugin": { "type": "string" },
+            "version": { "type": "string" },
+            "proto": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "proof": { "description": "TCP only: the HMAC proof (hex).", "type": ["string", "null"] }
+          }
+        },
+        {
+          "title": "register",
+          "type": "object",
+          "required": ["type", "device"],
+          "properties": { "type": { "const": "register" }, "device": { "$ref": "#/$defs/Device" } }
+        },
+        {
+          "title": "unregister",
+          "type": "object",
+          "required": ["type", "device"],
+          "properties": { "type": { "const": "unregister" }, "device": { "type": "string" } }
+        },
+        {
+          "title": "update",
+          "type": "object",
+          "required": ["type", "device", "capability", "value"],
+          "properties": {
+            "type": { "const": "update" },
+            "device": { "type": "string" },
+            "capability": { "type": "string" },
+            "value": { "$ref": "#/$defs/Value" }
+          }
+        },
+        {
+          "title": "set_result",
+          "type": "object",
+          "required": ["type", "req_id", "ok"],
+          "properties": {
+            "type": { "const": "set_result" },
+            "req_id": { "type": "integer", "minimum": 0 },
+            "ok": { "type": "boolean" },
+            "error": { "type": ["string", "null"] }
+          }
+        },
+        { "title": "ping", "type": "object", "required": ["type"], "properties": { "type": { "const": "ping" } } },
+        { "title": "pong", "type": "object", "required": ["type"], "properties": { "type": { "const": "pong" } } }
+      ]
+    },
+    "HostMessage": {
+      "description": "A message from the host to a plugin.",
+      "oneOf": [
+        {
+          "title": "challenge",
+          "description": "TCP only; sent first.",
+          "type": "object",
+          "required": ["type", "nonce"],
+          "properties": { "type": { "const": "challenge" }, "nonce": { "type": "string" } }
+        },
+        {
+          "title": "welcome",
+          "type": "object",
+          "required": ["type", "proto"],
+          "properties": { "type": { "const": "welcome" }, "proto": { "type": "integer", "minimum": 0, "maximum": 4294967295 } }
+        },
+        {
+          "title": "set",
+          "type": "object",
+          "required": ["type", "req_id", "device", "capability", "value"],
+          "properties": {
+            "type": { "const": "set" },
+            "req_id": { "type": "integer", "minimum": 0 },
+            "device": { "type": "string" },
+            "capability": { "type": "string" },
+            "value": { "$ref": "#/$defs/Value" }
+          }
+        },
+        {
+          "title": "error",
+          "type": "object",
+          "required": ["type", "message"],
+          "properties": { "type": { "const": "error" }, "message": { "type": "string" } }
+        },
+        { "title": "ping", "type": "object", "required": ["type"], "properties": { "type": { "const": "ping" } } },
+        { "title": "pong", "type": "object", "required": ["type"], "properties": { "type": { "const": "pong" } } }
+      ]
+    }
+  }
+}

@@ -13,3 +13,6 @@ serde_json = { workspace = true }
 # Already in the dependency graph through rs-matter: same versions, so no new crates.
 hmac = "0.13"
 sha2 = "0.11"
+
+[dev-dependencies]
+jsonschema = { version = "0.61.2", default-features = false }
